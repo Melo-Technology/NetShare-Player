@@ -125,6 +125,6 @@ Download `NetShare-Player.apk` from the [latest release](https://github.com/melo
 
 **Made with ♥ by Mélo Technology**
 
-[hello@melo.technology](mailto:hello@melo.technology) · [GitHub](https://github.com/melotechnology)
+[melotechnology@proton.me](mailto:melotechnology@proton.me) · [GitHub](https://github.com/melotechnology)
 
 </div>
