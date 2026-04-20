@@ -99,10 +99,10 @@ A fluid, high-performance Flutter application designed for seamless media consum
 ## Installation
 
 ### Server (PC)
-Download `NetShare.Server.exe` from the [latest release](https://github.com/melotechnology/netshare-player/releases) and run it. No installation required.
+Download `NetShare.Server.exe` from the [latest release](https://github.com/Melo-Technology/NetShare-Player/releases) and run it. No installation required.
 
 ### Mobile App (Android)
-Download `NetShare-Player.apk` from the [latest release](https://github.com/melotechnology/netshare-player/releases) and install it on your Android device.
+Download `NetShare-Player.apk` from the [latest release](https://github.com/Melo-Technology/NetShare-Player/releases) and install it on your Android device.
 
 > **Note:** You may need to enable *Install from unknown sources* in your Android settings.
 
