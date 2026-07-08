@@ -1,6 +1,4 @@
-"""
-NetShare Player — Network / filesystem utilities
-"""
+"""Network, path-safety, and lightweight media metadata helpers."""
 
 import mimetypes
 import socket
@@ -12,7 +10,7 @@ from urllib.parse import unquote
 import src.state as state
 
 
-# == Local IP enumeration =======================================================
+# Local IP enumeration
 
 def get_local_ips() -> list[str]:
     ips = []
@@ -40,7 +38,7 @@ def get_local_ips() -> list[str]:
     return ips or ["127.0.0.1"]
 
 
-# == Path safety ================================================================
+# Path safety
 
 def safe_path(rel_path: str) -> Path | None:
     """
@@ -56,7 +54,7 @@ def safe_path(rel_path: str) -> Path | None:
         return None
 
 
-# == File metadata ==============================================================
+# File metadata
 
 def file_info(path: Path, base: Path) -> dict:
     rel  = str(path.relative_to(base)).replace("\\", "/")
@@ -70,7 +68,7 @@ def file_info(path: Path, base: Path) -> dict:
     }
 
 
-# == Cover art (ID3 APIC extractor) ============================================
+# Cover art (ID3 APIC extractor)
 
 def extract_cover_from_mp3(file_path: Path) -> tuple[bytes, str] | None:
     """

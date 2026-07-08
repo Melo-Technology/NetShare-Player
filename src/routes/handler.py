@@ -1,20 +1,30 @@
 """
-NetShare Player — HTTP request handler
+HTTP request handler for NetShare Server.
 
 NetShareHandler is a BaseHTTPRequestHandler subclass that serves all
 API routes used by the Flutter mobile client:
 
-    GET /ping         server info + auth mode
-    GET /list         directory listing
-    GET /search       file-index search
-    GET /file         full / ranged file download
-    GET /thumbnail    image thumbnail (Pillow)
-    GET /art          MP3 cover-art extraction
+    GET /ping           server info + auth mode
+    GET /list           directory listing
+    GET /search         file-index search
+    GET /file           full / ranged file download
+    GET /thumbnail      image thumbnail (Pillow) or video frame (ffmpeg)
+    GET /art            MP3 cover-art extraction
+    GET /document       read text document (UTF-8)
+    GET /setup-totp     local pairing QR + secret
+    POST /register-device trust a local device with TOTP
+    POST /upload        file upload with optional overwrite
+    PUT /document       write text document (UTF-8)
 """
 
 import json
 import mimetypes
+import os
 import socket
+import time
+import hmac
+import ipaddress
+import base64
 from http.server import BaseHTTPRequestHandler
 from io import BytesIO
 from pathlib import Path
@@ -28,8 +38,25 @@ from src.utils.network import safe_path, file_info, extract_cover_from_mp3
 if HAS_PIL:
     from PIL import Image as PilImage
 
+MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+MAX_TEXT_EDIT_BYTES = 2 * 1024 * 1024
 
-# == Tunnel detection ===========================================================
+_TEXT_EDIT_EXTS = {
+    ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".xml", ".html",
+    ".htm", ".css", ".js", ".py", ".log", ".ini", ".conf", ".yaml", ".yml",
+    ".rtf",
+}
+
+_ALLOWED_BROWSER_ORIGINS = (
+    "http://localhost",
+    "http://127.0.0.1",
+    "http://[::1]",
+    "capacitor://localhost",
+    "ionic://localhost",
+)
+
+
+# Tunnel detection
 
 def _is_tunnel_request(handler) -> bool:
     """
@@ -41,14 +68,27 @@ def _is_tunnel_request(handler) -> bool:
     """
     if not state.TUNNEL_ACTIVE:
         return False
-    return handler.headers.get("X-Tunnel", "").strip() == "1"
+    if handler.headers.get("X-Tunnel", "").strip() != "1":
+        return False
+    try:
+        return ipaddress.ip_address(handler.client_address[0]).is_loopback
+    except ValueError:
+        return False
 
 
-# == HTTP handler ===============================================================
+def _is_lan_request(handler) -> bool:
+    try:
+        ip = ipaddress.ip_address(handler.client_address[0])
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        return False
+
+
+# HTTP handler
 
 class NetShareHandler(BaseHTTPRequestHandler):
 
-    # == Logging overrides ======================================================
+    # Logging overrides
 
     def log_message(self, fmt, *args):
         pass   # suppress default stderr output
@@ -57,14 +97,14 @@ class NetShareHandler(BaseHTTPRequestHandler):
         status = str(code)
         kind   = "error" if status[0] in ("4", "5") else "info"
         state._emit(
-            f"{self.command:<8} {self.path}  →  {code}  [{self.client_address[0]}]",
+            f"{self.command:<8} {self.path}  ->  {code}  [{self.client_address[0]}]",
             kind,
         )
 
     def log_error(self, fmt, *args):
         state._emit(f"ERROR  {fmt % args}", "error")
 
-    # == Response helpers =======================================================
+    # Response helpers
 
     def send_json(self, data, status=200):
         try:
@@ -72,7 +112,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header("Content-Type",   "application/json; charset=utf-8")
             self.send_header("Content-Length", len(body))
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._send_cors_headers()
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
@@ -84,7 +124,47 @@ class NetShareHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    # == Auth ===================================================================
+    def _read_body(self, max_bytes: int, allow_empty: bool = False) -> bytes | None:
+        length = self._content_length()
+        if length is None:
+            return None
+        if length == 0 and not allow_empty:
+            self.send_error_json("Empty request body", 400)
+            return None
+        if length > max_bytes:
+            self.send_error_json("Request body too large", 413)
+            return None
+        return self.rfile.read(length)
+
+    def _content_length(self) -> int | None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error_json("Invalid Content-Length", 400)
+            return None
+        if length < 0:
+            self.send_error_json("Invalid Content-Length", 400)
+            return None
+        return length
+
+    def _send_cors_headers(self) -> bool:
+        origin = self.headers.get("Origin", "")
+        if not origin:
+            return True
+        if self._is_allowed_cors_origin():
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            return True
+        return False
+
+    def _is_allowed_cors_origin(self) -> bool:
+        origin = self.headers.get("Origin", "")
+        return bool(origin and origin.startswith(_ALLOWED_BROWSER_ORIGINS))
+
+    def _rate_key(self, scope: str) -> str:
+        return f"{scope}:{self.client_address[0]}"
+
+    # Auth
 
     def _check_password(self) -> bool:
         """
@@ -92,27 +172,74 @@ class NetShareHandler(BaseHTTPRequestHandler):
         request context (tunnel vs. LAN).  Empty password = open access.
         """
         via_tunnel = _is_tunnel_request(self)
+        key = self._rate_key("password:tunnel" if via_tunnel else "password:local")
+        if not state.auth_attempt_allowed(key):
+            self._auth_rate_limited = True
+            return False
         if via_tunnel:
-            if not state.TUNNEL_PASSWORD:
+            community = state.COMMUNITY_PASSWORD
+            admin = state.ADMIN_PASSWORD or state.TUNNEL_PASSWORD
+            if not community and not admin:
                 return True
-            received = unquote(self.headers.get("X-Password", ""))
-            return received == state.TUNNEL_PASSWORD
+            received = unquote(self.headers.get("X-Password", "")).strip()
+            ok = bool(
+                (community and hmac.compare_digest(received, community)) or
+                (admin and hmac.compare_digest(received, admin))
+            )
         else:
             if not state.LOCAL_PASSWORD:
                 return True
-            received = unquote(self.headers.get("X-Password", ""))
-            return received == state.LOCAL_PASSWORD
+            received = unquote(self.headers.get("X-Password", "")).strip()
+            ok = hmac.compare_digest(received, state.LOCAL_PASSWORD)
+        if ok:
+            state.clear_auth_failures(key)
+        else:
+            state.record_auth_failure(key)
+        return ok
 
-    # == OPTIONS (CORS pre-flight) ==============================================
+    def _public_role(self) -> str:
+        if not _is_tunnel_request(self):
+            return ""
+        received = unquote(self.headers.get("X-Password", "")).strip()
+        admin = state.ADMIN_PASSWORD or state.TUNNEL_PASSWORD
+        if admin and hmac.compare_digest(received, admin):
+            return "admin"
+        if state.COMMUNITY_PASSWORD and hmac.compare_digest(received, state.COMMUNITY_PASSWORD):
+            return "community"
+        if not admin and not state.COMMUNITY_PASSWORD:
+            return "admin"
+        return ""
+
+    def _has_full_write_access(self) -> bool:
+        if _is_tunnel_request(self):
+            return self._public_role() == "admin"
+        return state.is_trusted_device(self.headers.get("X-Device-ID", ""))
+
+    def _has_upload_access(self) -> bool:
+        if _is_tunnel_request(self):
+            role = self._public_role()
+            return role == "admin" or (
+                role == "community" and state.COMMUNITY_UPLOAD
+            )
+        return self._has_full_write_access()
+
+    def _community_home(self) -> str:
+        return "/" if state.COMMUNITY_BROWSE_ROOT else "/incoming"
+
+    # OPTIONS (CORS pre-flight)
 
     def do_OPTIONS(self):
+        if self.headers.get("Origin") and not self._is_allowed_cors_origin():
+            self.send_response(403)
+            self.end_headers()
+            return
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin",  "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "*")
+        self._send_cors_headers()
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "X-Password, X-Device-ID, X-Tunnel, X-File-Path-B64, X-Filename, X-Upload-Token, Content-Type, Range")
         self.end_headers()
 
-    # == GET router =============================================================
+    # GET router
 
     def do_GET(self):
         parsed   = urlparse(self.path)
@@ -123,8 +250,12 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self._route_ping(params)
             return
 
+        if endpoint == "/setup-totp":
+            self._route_setup_totp()
+            return
+
         if not self._check_password():
-            self.send_error_json("Unauthorized", 401)
+            self.send_error_json("Too many auth attempts" if getattr(self, "_auth_rate_limited", False) else "Unauthorized", 429 if getattr(self, "_auth_rate_limited", False) else 401)
             return
 
         if endpoint == "/list":
@@ -137,14 +268,71 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self._route_thumbnail(params)
         elif endpoint == "/art":
             self._route_art(params)
+        elif endpoint == "/document":
+            if not self._has_full_write_access():
+                self.send_error_json("Trusted device or admin key required", 403)
+                return
+            self._route_document_get(params)
+        elif endpoint == "/upload-request":
+            if not self._has_upload_access():
+                self.send_error_json("Trusted device or upload key required", 403)
+                return
+            self._route_upload_request_status(params)
         else:
             self.send_error_json("Unknown endpoint", 404)
 
-    # == Route implementations ==================================================
+    # POST / PUT routers
+
+    def do_POST(self):
+        parsed   = urlparse(self.path)
+        endpoint = parsed.path.rstrip("/")
+        params   = parse_qs(parsed.query)
+
+        if endpoint == "/register-device":
+            self._route_register_device()
+            return
+
+        if not self._check_password():
+            self.send_error_json("Too many auth attempts" if getattr(self, "_auth_rate_limited", False) else "Unauthorized", 429 if getattr(self, "_auth_rate_limited", False) else 401)
+            return
+        if endpoint == "/upload":
+            if not self._has_upload_access():
+                self.send_error_json("Trusted device or upload key required", 403)
+                return
+            self._route_upload(params)
+        elif endpoint == "/upload-request":
+            if not self._has_upload_access():
+                self.send_error_json("Trusted device or upload key required", 403)
+                return
+            self._route_upload_request_create()
+        else:
+            self.send_error_json("Unknown endpoint", 404)
+
+    def do_PUT(self):
+        parsed   = urlparse(self.path)
+        endpoint = parsed.path.rstrip("/")
+        params   = parse_qs(parsed.query)
+
+        if not self._check_password():
+            self.send_error_json("Too many auth attempts" if getattr(self, "_auth_rate_limited", False) else "Unauthorized", 429 if getattr(self, "_auth_rate_limited", False) else 401)
+            return
+        if not self._has_full_write_access():
+            self.send_error_json("Trusted device or admin key required", 403)
+            return
+
+        if endpoint == "/document":
+            self._route_document_put(params)
+        else:
+            self.send_error_json("Unknown endpoint", 404)
+
+    # Route implementations
 
     def _route_ping(self, params):
+        """Return server metadata and feature availability to the client."""
         from src.core.file_index import _file_index
         via_tunnel = _is_tunnel_request(self)
+        public_role = self._public_role() if via_tunnel else ""
+        device_id = self.headers.get("X-Device-ID", "").strip()
         ws_port    = None
         if state._ws_manager is not None:
             try:
@@ -154,16 +342,99 @@ class NetShareHandler(BaseHTTPRequestHandler):
         self.send_json({
             "name":               state.SERVER_NAME,
             "version":            VERSION,
-            "root":               str(state.ROOT_DIR),
+            "root":               state.ROOT_DIR.name or str(state.ROOT_DIR),
             "ws_port":            ws_port,
             "index_ready":        _file_index.ready,
             "index_total":        _file_index.total,
-            "requires_password":  bool(state.TUNNEL_PASSWORD) if via_tunnel else bool(state.LOCAL_PASSWORD),
+            "requires_password":  bool(
+                (state.COMMUNITY_PASSWORD or state.ADMIN_PASSWORD or state.TUNNEL_PASSWORD)
+                if via_tunnel else state.LOCAL_PASSWORD
+            ),
             "access_mode":        "tunnel" if via_tunnel else "local",
+            "mode":               "public" if via_tunnel else "local",
+            "public_role":        public_role,
+            "trusted":            state.is_trusted_device(device_id) if device_id and not via_tunnel else False,
+            "features": {
+                "upload":          bool(state.FEATURE_FLAGS.get("upload"))
+                                   and (public_role != "community" or state.COMMUNITY_UPLOAD),
+                "download":        public_role != "community" or state.COMMUNITY_DOWNLOAD,
+                "browse_root":     public_role != "community" or state.COMMUNITY_BROWSE_ROOT,
+                "document_edit":   bool(state.FEATURE_FLAGS.get("document_edit"))
+                                   and public_role != "community",
+                "write_pairing":   bool(state.FEATURE_FLAGS.get("write_pairing"))
+                                   and not via_tunnel,
+                "write_otp_ttl":   0,
+                "write_token_ttl": 0,
+                "editable_extensions": sorted(_TEXT_EDIT_EXTS),
+                "office_edit_mode": "download_edit_upload",
+                "public_upload_mode": state.PUBLIC_UPLOAD_MODE,
+            },
         })
+
+    def _route_setup_totp(self):
+        """Create a TOTP secret and QR payload for local trusted-device pairing."""
+        if _is_tunnel_request(self) or not _is_lan_request(self):
+            return self.send_error_json("Local network only", 403)
+        if not self._check_password():
+            return self.send_error_json(
+                "Too many auth attempts" if getattr(self, "_auth_rate_limited", False) else "Unauthorized",
+                429 if getattr(self, "_auth_rate_limited", False) else 401,
+            )
+        try:
+            import qrcode
+            uri = state.pyotp.TOTP(state.TOTP_SECRET).provisioning_uri(
+                name=state.SERVER_NAME,
+                issuer_name="NetShare Server",
+            )
+            img = qrcode.make(uri)
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            qr_png = base64.b64encode(buf.getvalue()).decode("ascii")
+            return self.send_json({
+                "secret": state.TOTP_SECRET,
+                "otpauth_uri": uri,
+                "qr_png": qr_png,
+            })
+        except Exception as e:
+            return self.send_error_json(f"Could not build TOTP QR: {e}", 500)
+
+    def _route_register_device(self):
+        """Register a trusted device after validating its one-time TOTP code."""
+        if _is_tunnel_request(self) or not _is_lan_request(self):
+            return self.send_error_json("Local network only", 403)
+        if not self._check_password():
+            return self.send_error_json(
+                "Too many auth attempts" if getattr(self, "_auth_rate_limited", False) else "Unauthorized",
+                429 if getattr(self, "_auth_rate_limited", False) else 401,
+            )
+        key = self._rate_key("totp-register")
+        if not state.auth_attempt_allowed(key):
+            return self.send_error_json("Too many TOTP attempts", 429)
+        body = self._read_body(8 * 1024)
+        if body is None:
+            return
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self.send_error_json("Invalid JSON body", 400)
+        if not state.register_device(
+            str(payload.get("device_id", "")).strip(),
+            str(payload.get("code", "")).strip(),
+        ):
+            state.record_auth_failure(key)
+            return self.send_error_json("Invalid TOTP code", 403)
+        state.clear_auth_failures(key)
+        self.send_json({"ok": True})
 
     def _route_list(self, params):
         rel    = params.get("path", ["/"])[0]
+        if _is_tunnel_request(self) and self._public_role() == "community":
+            if not state.COMMUNITY_BROWSE_ROOT:
+                rel = "/incoming"
+                try:
+                    (state.ROOT_DIR / "incoming").mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
         target = state.ROOT_DIR if rel in ("/", "") else safe_path(rel)
         if target is None:
             return self.send_error_json("Invalid path", 403)
@@ -188,8 +459,13 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self.send_error_json("Permission denied", 403)
 
     def _route_search(self, params):
+        """Search the file index or invalidate and rebuild it on demand."""
         from src.core.file_index import _file_index
+        if _is_tunnel_request(self) and self._public_role() == "community":
+            return self.send_error_json("Search is not available for community access", 403)
         if params.get("invalidate"):
+            if not self._has_full_write_access():
+                return self.send_error_json("Trusted device or admin key required", 403)
             _file_index.clear()
             _file_index.invalidate_cache(state.ROOT_DIR)
             _file_index.build(state.ROOT_DIR)
@@ -282,7 +558,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
         """Extract a JPEG frame from a video file using ffmpeg."""
         if not HAS_FFMPEG:
             return self.send_error_json(
-                "ffmpeg not found — install it to enable video thumbnails", 501
+                "ffmpeg not found - install it to enable video thumbnails", 501
             )
         import subprocess as _sp
         try:
@@ -307,7 +583,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
                 )
                 if result.returncode == 0 and result.stdout:
                     data = result.stdout
-                    # Optional: shrink further with PIL if available
+                    # Downscale large frames further when Pillow is available.
                     if HAS_PIL and len(data) > 300 * 1024:
                         try:
                             buf = BytesIO(data)
@@ -323,7 +599,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
                         self.send_header("Content-Type",   "image/jpeg")
                         self.send_header("Content-Length", str(len(data)))
                         self.send_header("Cache-Control",  "max-age=86400")
-                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self._send_cors_headers()
                         self.end_headers()
                         self.wfile.write(data)
                     except (BrokenPipeError, ConnectionResetError):
@@ -367,7 +643,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type",   "image/jpeg")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control",  "max-age=86400")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._send_cors_headers()
             self.end_headers()
             self.wfile.write(data)
         except Exception as e:
@@ -390,7 +666,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type",   mime)
                 self.send_header("Content-Length", str(len(img_data)))
                 self.send_header("Cache-Control",  "max-age=86400")
-                self.send_header("Access-Control-Allow-Origin", "*")
+                self._send_cors_headers()
                 self.end_headers()
                 self.wfile.write(img_data)
             except (BrokenPipeError, ConnectionResetError):
@@ -400,7 +676,282 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
 
-    # == File-serving primitives ================================================
+    def _route_upload_request_create(self):
+        """Create an approval request or immediate upload grant for public uploads."""
+        if not state.FEATURE_FLAGS.get("upload"):
+            return self.send_error_json("Upload disabled", 403)
+        if not _is_tunnel_request(self):
+            token = state.issue_public_upload_grant("", 0, self.client_address[0], "/")
+            return self.send_json({"status": "accepted", "upload_token": token})
+
+        body = self._read_body(16 * 1024)
+        if body is None:
+            return
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self.send_error_json("Invalid JSON body", 400)
+
+        filename = str(payload.get("filename", "")).strip()
+        try:
+            size = int(payload.get("size", 0))
+        except (TypeError, ValueError):
+            size = 0
+        if not filename or Path(filename).name != filename or filename in (".", ".."):
+            return self.send_error_json("Invalid filename", 400)
+        if size < 0:
+            return self.send_error_json("Invalid size", 400)
+        max_bytes = max(1, int(state.MAX_UPLOAD_SIZE_MB)) * 1024 * 1024
+        if size > max_bytes:
+            return self.send_error_json("Request body too large", 413)
+        if state.ALLOWED_UPLOAD_EXTENSIONS:
+            if Path(filename).suffix.lower() not in state.ALLOWED_UPLOAD_EXTENSIONS:
+                return self.send_error_json("File type not allowed", 415)
+
+        if state.PUBLIC_UPLOAD_MODE != "request":
+            token = state.issue_public_upload_grant(
+                filename, size, self.client_address[0], "/incoming"
+            )
+            return self.send_json({"status": "accepted", "upload_token": token})
+
+        request = state.create_public_upload_request(
+            filename, size, self.client_address[0], "/incoming"
+        )
+        self.send_json({
+            "status": request["status"],
+            "request_id": request["id"],
+            "expires_at": request["expires_at"],
+        }, 202)
+
+    def _route_upload_request_status(self, params):
+        request_id = params.get("id", [""])[0].strip()
+        if not request_id:
+            return self.send_error_json("Missing request id", 400)
+        request = state.get_public_upload_request(request_id)
+        if not request:
+            return self.send_error_json("Request not found", 404)
+        payload = {
+            "status": request.get("status", "pending"),
+            "request_id": request_id,
+        }
+        if request.get("status") == "accepted":
+            payload["upload_token"] = request.get("token", "")
+        self.send_json(payload)
+
+    def _route_upload(self, params):
+        """Receive a file upload and persist it under the configured directory."""
+        if not state.FEATURE_FLAGS.get("upload"):
+            return self.send_error_json("Upload disabled", 403)
+
+        via_tunnel = _is_tunnel_request(self)
+        role = self._public_role()
+        if via_tunnel and role == "community":
+            if not state.upload_allowed_for_ip(self.client_address[0]):
+                state._record_write_activity("rate-limit", "public upload", None, self.client_address[0])
+                return self.send_error_json("Upload rate limit exceeded", 429)
+
+        folder_rel = "/incoming" if via_tunnel else params.get("path", ["/"])[0]
+        filename = (
+            params.get("filename", [""])[0]
+            or unquote(self.headers.get("X-Filename", ""))
+        ).strip()
+        if not filename:
+            return self.send_error_json("Missing filename", 400)
+        if Path(filename).name != filename or filename in (".", ".."):
+            return self.send_error_json("Invalid filename", 400)
+        if via_tunnel and state.ALLOWED_UPLOAD_EXTENSIONS:
+            if Path(filename).suffix.lower() not in state.ALLOWED_UPLOAD_EXTENSIONS:
+                return self.send_error_json("File type not allowed", 415)
+
+        upload_base = (
+            (state.ROOT_DIR / "incoming") if via_tunnel
+            else (state.ROOT_DIR / state.UPLOAD_DIRNAME)
+        ).resolve()
+        try:
+            upload_base.relative_to(state.ROOT_DIR.resolve())
+        except ValueError:
+            return self.send_error_json("Invalid upload directory", 500)
+
+        folder = upload_base if folder_rel in ("", "/") else self._safe_upload_folder(upload_base, folder_rel)
+        if folder is None:
+            return self.send_error_json("Invalid path", 403)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return self.send_error_json(f"Upload directory unavailable: {e}", 500)
+        if not folder.is_dir():
+            return self.send_error_json("Target directory not found", 404)
+
+        length = self._content_length()
+        if length is None:
+            return
+        max_bytes = (
+            max(1, int(state.MAX_UPLOAD_SIZE_MB)) * 1024 * 1024
+            if via_tunnel else MAX_UPLOAD_BYTES
+        )
+        if length > max_bytes:
+            return self.send_error_json("Request body too large", 413)
+        if via_tunnel and state.PUBLIC_UPLOAD_MODE == "request":
+            token = self.headers.get("X-Upload-Token", "").strip()
+            if not state.consume_public_upload_grant(token, filename, length):
+                return self.send_error_json("Upload request approval required", 403)
+
+        overwrite = params.get("overwrite", ["0"])[0].lower() in ("1", "true", "yes")
+        target = (folder / filename).resolve()
+        try:
+            target.relative_to(state.ROOT_DIR.resolve())
+        except ValueError:
+            return self.send_error_json("Invalid destination", 403)
+        if target.exists() and not overwrite:
+            target = self._unique_upload_path(target)
+
+        try:
+            rel_path = "/" + str(target.relative_to(state.ROOT_DIR)).replace("\\", "/")
+            state._record_write_activity(
+                "receiving", rel_path, length, self.client_address[0]
+            )
+            with open(target, "wb") as f:
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(self._CHUNK, remaining))
+                    if not chunk:
+                        raise OSError("Connection closed before upload completed")
+                    f.write(chunk)
+                    remaining -= len(chunk)
+            self._notify_written_file(target)
+            if via_tunnel:
+                state.record_upload_for_ip(self.client_address[0])
+                state.PUBLIC_UPLOAD_STATS["received"] += 1
+            state._record_write_activity(
+                "received", rel_path, target.stat().st_size, self.client_address[0]
+            )
+            self.send_json({
+                "ok": True,
+                "path": rel_path,
+                "size": target.stat().st_size,
+                "overwritten": overwrite,
+            }, 201)
+        except PermissionError:
+            self.send_error_json("Permission denied", 403)
+        except OSError as e:
+            self.send_error_json(f"Upload failed: {e}", 500)
+
+    def _route_document_get(self, params):
+        if not state.FEATURE_FLAGS.get("document_edit"):
+            return self.send_error_json("Document edit disabled", 403)
+        target = self._editable_document_target(params)
+        if target is None:
+            return
+        try:
+            if target.stat().st_size > MAX_TEXT_EDIT_BYTES:
+                return self.send_error_json("Document too large for inline edit", 413)
+            raw = target.read_bytes()
+            text = raw.decode("utf-8-sig")
+            self.send_json({
+                "path": "/" + str(target.relative_to(state.ROOT_DIR)).replace("\\", "/"),
+                "name": target.name,
+                "encoding": "utf-8",
+                "content": text,
+            })
+        except UnicodeDecodeError:
+            self.send_error_json("Document is not UTF-8 text", 415)
+        except PermissionError:
+            self.send_error_json("Permission denied", 403)
+        except OSError as e:
+            self.send_error_json(f"Read failed: {e}", 500)
+
+    def _route_document_put(self, params):
+        if not state.FEATURE_FLAGS.get("document_edit"):
+            return self.send_error_json("Document edit disabled", 403)
+        target = self._editable_document_target(params)
+        if target is None:
+            return
+        body = self._read_body(MAX_TEXT_EDIT_BYTES, allow_empty=True)
+        if body is None:
+            return
+        content_type = self.headers.get("Content-Type", "")
+        try:
+            if "application/json" in content_type:
+                payload = json.loads(body.decode("utf-8"))
+                text = str(payload.get("content", ""))
+            else:
+                text = body.decode("utf-8")
+            with open(target, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            self._notify_written_file(target)
+            state._record_write_activity(
+                "edited",
+                "/" + str(target.relative_to(state.ROOT_DIR)).replace("\\", "/"),
+                target.stat().st_size,
+                self.client_address[0],
+            )
+            self.send_json({
+                "ok": True,
+                "path": "/" + str(target.relative_to(state.ROOT_DIR)).replace("\\", "/"),
+                "size": target.stat().st_size,
+            })
+        except UnicodeDecodeError:
+            self.send_error_json("Document body must be UTF-8 text", 415)
+        except json.JSONDecodeError:
+            self.send_error_json("Invalid JSON body", 400)
+        except PermissionError:
+            self.send_error_json("Permission denied", 403)
+        except OSError as e:
+            self.send_error_json(f"Save failed: {e}", 500)
+
+    def _editable_document_target(self, params) -> Path | None:
+        rel = params.get("path", [""])[0]
+        if not rel:
+            self.send_error_json("Missing 'path' parameter", 400)
+            return None
+        target = safe_path(rel)
+        if target is None:
+            self.send_error_json("Invalid path", 403)
+            return None
+        if not target.exists():
+            self.send_error_json("Document not found", 404)
+            return None
+        if not target.is_file():
+            self.send_error_json("Not a file", 400)
+            return None
+        if target.suffix.lower() not in _TEXT_EDIT_EXTS:
+            self.send_error_json(
+                "Only text-like documents can be edited inline; use /upload to replace office files",
+                415,
+            )
+            return None
+        return target
+
+    def _unique_upload_path(self, target: Path) -> Path:
+        stem = target.stem
+        suffix = target.suffix
+        parent = target.parent
+        for i in range(1, 10_000):
+            candidate = parent / f"{stem} ({i}){suffix}"
+            if not candidate.exists():
+                return candidate
+        return parent / f"{stem} ({os.getpid()}){suffix}"
+
+    def _safe_upload_folder(self, upload_base: Path, rel_path: str) -> Path | None:
+        clean = unquote(rel_path).lstrip("/\\")
+        resolved = (upload_base / clean).resolve()
+        try:
+            resolved.relative_to(upload_base)
+            return resolved
+        except ValueError:
+            return None
+
+    def _notify_written_file(self, target: Path):
+        try:
+            from src.core.file_index import _file_index
+            _file_index.add_file(target, state.ROOT_DIR)
+            if state._ws_manager:
+                rel = "/" + str(target.relative_to(state.ROOT_DIR)).replace("\\", "/")
+                state._ws_manager.notify_file_change(rel)
+        except Exception:
+            pass
+
+    # File-serving primitives
 
     _CHUNK = 8 * 1024 * 1024   # 8 MB write buffer
 
@@ -409,7 +960,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type",   mime)
         self.send_header("Content-Length", size)
         self.send_header("Accept-Ranges",  "bytes")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_cors_headers()
         # UTF-8 safe Content-Disposition
         try:
             ascii_name  = path.name.encode("ascii").decode("ascii")
@@ -443,7 +994,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", length)
             self.send_header("Content-Range",  f"bytes {start}-{end}/{size}")
             self.send_header("Accept-Ranges",  "bytes")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._send_cors_headers()
             try:
                 self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             except Exception:

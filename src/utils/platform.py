@@ -1,6 +1,4 @@
-"""
-NetShare Player — Platform detection & single-instance lock
-"""
+"""Platform detection helpers and single-instance protection for the app."""
 
 import atexit
 import os
@@ -9,9 +7,10 @@ import tempfile
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
+from src.i18n import t
 
 
-# == Platform detection =========================================================
+# Platform detection
 
 def _get_platform() -> str:
     p = sys.platform
@@ -22,7 +21,7 @@ def _get_platform() -> str:
 PLATFORM: str = _get_platform()
 
 
-# == Single-instance helpers ====================================================
+# Single-instance helpers
 
 _win_mutex_handle  = None
 _linux_lock_sock   = None
@@ -32,7 +31,7 @@ _LOCK_FILE         = Path(tempfile.gettempdir()) / "netshare_player_v1.lock"
 def _show_already_running():
     root = tk.Tk()
     root.withdraw()
-    messagebox.showwarning("NetShare Player", "An instance is already running.")
+    messagebox.showwarning(t("netshare_player_title"), t("already_running_message"))
     root.destroy()
     sys.exit(0)
 

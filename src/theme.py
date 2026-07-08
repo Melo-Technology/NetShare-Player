@@ -1,5 +1,5 @@
 """
-NetShare Player — Theme system
+Theme palette and color accessors for NetShare Server.
 Monochrome dark / light palettes with live-swap accessors.
 """
 
@@ -31,8 +31,7 @@ _LIGHT = {
     "TOGGLE_FG": "#242424",
 }
 
-# Active palette — mutated in-place on theme toggle so all accessors
-# always reflect the current theme without re-import.
+# Mutated in place on theme toggle so imported accessors see the active palette.
 _theme: dict = dict(_DARK)
 
 

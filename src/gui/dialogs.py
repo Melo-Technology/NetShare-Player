@@ -1,5 +1,5 @@
 """
-NetShare Player — GUI dialogs
+Reusable Tkinter dialogs for NetShare Server.
 """
 
 import tkinter as tk
@@ -16,7 +16,7 @@ def ask_tunnel_password(parent) -> str | None:
 
     Returns the entered password string, or None if the user cancelled.
     The field has a show/hide toggle.
-    The password is required — cannot be left empty (prevents open public access).
+    The password is required - cannot be left empty (prevents open public access).
     """
     result = {"value": None}
 
@@ -28,7 +28,7 @@ def ask_tunnel_password(parent) -> str | None:
 
     s = parent._s
 
-    # == Header =================================================================
+    # Header
     tk.Label(
         dlg,
         text=t("tunnel_access_password"),
@@ -43,7 +43,7 @@ def ask_tunnel_password(parent) -> str | None:
         fg=FG2(), bg=BG(), justify="left",
     ).pack(padx=s(24), pady=(0, s(16)), anchor="w")
 
-    # == Password row ===========================================================
+    # Password row
     pw_row   = tk.Frame(dlg, bg=BG())
     pw_row.pack(fill="x", padx=s(24), pady=(0, s(6)))
 
@@ -53,7 +53,7 @@ def ask_tunnel_password(parent) -> str | None:
     pw_entry = tk.Entry(
         pw_row,
         textvariable=pw_var,
-        show="•",
+        show="-",
         font=(FONT_MONO, parent._fs(11)),
         fg=FG(), bg=SURFACE(),
         insertbackground=FG(),
@@ -67,7 +67,7 @@ def ask_tunnel_password(parent) -> str | None:
 
     def _toggle_show():
         if show_var.get():
-            pw_entry.config(show="•")
+            pw_entry.config(show="-")
             show_btn.config(text=t("show"))
         else:
             pw_entry.config(show="")
@@ -86,7 +86,7 @@ def ask_tunnel_password(parent) -> str | None:
     )
     show_btn.pack(side="right", padx=(s(8), 0))
 
-    # == Error label (hidden until needed) ======================================
+    # Error label (hidden until needed)
     err_lbl = tk.Label(
         dlg, text="",
         font=(FONT_MONO, parent._fs(8)),
@@ -94,7 +94,7 @@ def ask_tunnel_password(parent) -> str | None:
     )
     err_lbl.pack(padx=s(24), anchor="w")
 
-    # == Buttons ================================================================
+    # Buttons
     btn_row = tk.Frame(dlg, bg=BG())
     btn_row.pack(fill="x", padx=s(24), pady=(s(12), s(24)))
 
@@ -106,6 +106,10 @@ def ask_tunnel_password(parent) -> str | None:
         pw = pw_var.get().strip()
         if not pw:
             err_lbl.config(text=t("password_required"))
+            pw_entry.focus_set()
+            return
+        if len(pw) < 8:
+            err_lbl.config(text=t("password_too_short"))
             pw_entry.focus_set()
             return
         result["value"] = pw

@@ -1,9 +1,9 @@
 """
-NetShare Player — File index & directory watcher
+File indexing and directory watching for NetShare Server.
 
-FileIndex   : in-memory search index with gzip cache persistence.
-_IndexEventHandler : watchdog handler that keeps the index live.
-_start_watcher / _stop_watcher : public helpers used by the server controller.
+The FileIndex class builds an in-memory searchable catalogue of the shared
+directory and persists it as a gzip cache. When watchdog is available, the
+module-level watcher keeps that index synchronized with filesystem changes.
 """
 
 import gzip
@@ -26,7 +26,7 @@ else:
 _dir_observer = None
 
 
-# == FileIndex ==================================================================
+# FileIndex
 
 class FileIndex:
     CACHE_FILENAME = ".netshare_index.cache"
@@ -45,7 +45,7 @@ class FileIndex:
                      "dmg","pkg","deb","rpm"},
     }
 
-    # == Constructor ============================================================
+    # Constructor
 
     def __init__(self):
         self._lock         = threading.RLock()
@@ -58,21 +58,23 @@ class FileIndex:
         self._flush_thread: threading.Thread | None = None
         self._flush_stop   = threading.Event()
 
-    # == Cache paths ============================================================
+    # Cache paths
 
     @staticmethod
     def _cache_path(root) -> Path:
         return Path(root) / FileIndex.CACHE_FILENAME
 
-    # == Public API =============================================================
+    # Public API
 
     def build(self, root):
+        """Start rebuilding the index from the filesystem in the background."""
         self.ready = False
         threading.Thread(
             target=self._build_thread, args=(Path(root),), daemon=True
         ).start()
 
     def search(self, query: str, limit=50, offset=0, file_type="all") -> dict:
+        """Find matching files by name, optionally filtered to a specific media category."""
         q = query.strip().lower()
         if not q:
             return {"items": [], "total": 0, "offset": offset, "has_more": False}
@@ -100,6 +102,7 @@ class FileIndex:
         }
 
     def add_file(self, path: Path, root: Path):
+        """Add or update a single file entry in the in-memory index."""
         if not path.is_file() or path.name.startswith("."):
             return
         try:
@@ -127,6 +130,7 @@ class FileIndex:
             pass
 
     def remove_file(self, rel_path: str):
+        """Remove a file entry from the index when it has been deleted."""
         with self._lock:
             for i, e in enumerate(self._entries):
                 if e["path"] == rel_path:
@@ -176,7 +180,7 @@ class FileIndex:
             self._flush_thread.join(timeout=2)
         self._flush_thread = None
 
-    # == Internal build pipeline ================================================
+    # Internal build pipeline
 
     def _build_thread(self, root: Path):
         if self._try_load_cache(root):
@@ -196,7 +200,7 @@ class FileIndex:
             with gzip.open(cache_file, "rb") as f:
                 data = json.loads(f.read().decode("utf-8"))
             if data.get("root") != str(root):
-                state._emit("INDEX  cache mismatch — full scan needed", "dim")
+                state._emit("INDEX  cache mismatch - full scan needed", "dim")
                 return False
             entries  = data["entries"]
             names_lc = [e["name"].lower() for e in entries]
@@ -207,12 +211,12 @@ class FileIndex:
                 self.total     = len(entries)
                 self.ready     = True
             state._emit(
-                f"INDEX  cache loaded — {self.total:,} files  [{_time.monotonic()-t0:.1f}s]",
+                f"INDEX  cache loaded - {self.total:,} files  [{_time.monotonic()-t0:.1f}s]",
                 "dim",
             )
             return True
         except Exception as e:
-            state._emit(f"INDEX  cache load failed ({e}) — full scan", "dim")
+            state._emit(f"INDEX  cache load failed ({e}) - full scan", "dim")
             return False
 
     def _apply_offline_diff(self, root: Path):
@@ -277,7 +281,7 @@ class FileIndex:
             )
         else:
             state._emit(f"INDEX  diff done  no changes  [{elapsed:.1f}s]", "dim")
-        state._emit(f"INDEX  ready — {self.total:,} files", "ok")
+        state._emit(f"INDEX  ready - {self.total:,} files", "ok")
 
     def _save_cache(self, root):
         cache_file = self._cache_path(root)
@@ -299,7 +303,7 @@ class FileIndex:
             state._emit(f"INDEX  cache save failed: {e}", "error")
 
     def _scan(self, root: Path):
-        state._emit("INDEX  scanning... (first run — will be cached)", "dim")
+        state._emit("INDEX  scanning... (first run - will be cached)", "dim")
         entries = []; names_lc = []; count = 0
         try:
             for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -335,9 +339,9 @@ class FileIndex:
             self._names_lc = names_lc
             self.total     = count
             self.ready     = True
-        state._emit(f"INDEX  ready — {count:,} files", "ok")
+        state._emit(f"INDEX  ready - {count:,} files", "ok")
 
-    # == File-type classifier ===================================================
+    # File-type classifier
 
     @classmethod
     def _get_file_category(cls, filename: str) -> str:
@@ -348,12 +352,12 @@ class FileIndex:
         return "other"
 
 
-# == Module-level singleton =====================================================
+# Module-level singleton
 
 _file_index = FileIndex()
 
 
-# == Directory watcher ==========================================================
+# Directory watcher
 
 class _IndexEventHandler(_WatchdogBase):
     def __init__(self, root: Path):
@@ -419,13 +423,13 @@ class _IndexEventHandler(_WatchdogBase):
                 for entry in _file_index._entries:
                     if entry["path"].startswith(src_p):
                         entry["path"] = dest_p + entry["path"][len(src_p):]
-            state._emit(f"WATCH  dir  moved   {src_rel} → {dest_rel}", "dim")
+            state._emit(f"WATCH  dir  moved   {src_rel} -> {dest_rel}", "dim")
             self._broadcast({"type": "dir_moved", "src": src_rel, "dest": dest_rel})
         else:
             _file_index.remove_file(src_rel)
             if not dest_path.name.startswith("."):
                 _file_index.add_file(dest_path, self._root)
-            state._emit(f"WATCH  file moved   {src_rel} → {dest_rel}", "dim")
+            state._emit(f"WATCH  file moved   {src_rel} -> {dest_rel}", "dim")
             self._broadcast({"type": "file_moved", "src": src_rel, "dest": dest_rel})
 
     def on_modified(self, event):
@@ -441,8 +445,8 @@ class _IndexEventHandler(_WatchdogBase):
 def _start_watcher(root: Path):
     global _dir_observer
     if not HAS_WATCHDOG:
-        state._emit("WATCH  watchdog not installed — live updates disabled", "dim")
-        state._emit("→  pip install watchdog", "dim")
+        state._emit("WATCH  watchdog not installed - live updates disabled", "dim")
+        state._emit("->  pip install watchdog", "dim")
         return
     _stop_watcher()
     handler  = _IndexEventHandler(root)

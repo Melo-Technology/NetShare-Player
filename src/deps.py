@@ -1,7 +1,4 @@
-"""
-NetShare Player — Optional dependency flags
-Imported once at startup; all other modules read from here.
-"""
+"""Runtime feature detection for optional dependencies used by the server."""
 
 try:
     import qrcode          # noqa: F401
@@ -34,12 +31,18 @@ try:
     FFMPEG_BIN: str | None = _get_ffmpeg_exe()
     HAS_FFMPEG: bool = True
 except ImportError:
-    # imageio-ffmpeg not installed — fall back to system ffmpeg
     import shutil as _shutil
     FFMPEG_BIN = _shutil.which("ffmpeg") or _shutil.which("ffmpeg.exe")
     HAS_FFMPEG = FFMPEG_BIN is not None
 except RuntimeError:
-    # imageio-ffmpeg installed but no binary found
     import shutil as _shutil
     FFMPEG_BIN = _shutil.which("ffmpeg") or _shutil.which("ffmpeg.exe")
     HAS_FFMPEG = FFMPEG_BIN is not None
+
+try:
+    import firebase_admin                           # noqa: F401
+    from firebase_admin import credentials          # noqa: F401
+    from firebase_admin import remote_config        # noqa: F401
+    HAS_FIREBASE = True
+except ImportError:
+    HAS_FIREBASE = False

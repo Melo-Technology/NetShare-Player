@@ -1,10 +1,4 @@
-"""
-NetShare Player — Cross-platform sleep inhibitor
-
-Windows : SetThreadExecutionState
-macOS   : caffeinate -d -i (subprocess)
-Linux   : systemd-inhibit    (subprocess)
-"""
+"""Cross-platform helpers that prevent the host from sleeping while the server runs."""
 
 import subprocess
 
@@ -57,7 +51,7 @@ def inhibit_sleep(enable: bool) -> None:
                     [
                         "systemd-inhibit",
                         "--what=sleep:idle",
-                        "--who=NetShare Player",
+                        "--who=NetShare Server",
                         "--why=Server is running",
                         "--mode=block",
                         "sleep", "infinity",
@@ -67,7 +61,7 @@ def inhibit_sleep(enable: bool) -> None:
                 )
             except FileNotFoundError:
                 state._emit(
-                    "SLEEP  systemd-inhibit not found — install systemd or xdg-utils",
+                    "SLEEP  systemd-inhibit not found - install systemd or xdg-utils",
                     "dim",
                 )
         else:

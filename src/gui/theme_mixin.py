@@ -1,8 +1,8 @@
 """
-NetShare Player — Theme-toggle mixin for the App widget.
+Theme switching helpers for the main NetShare Server window.
 
-Provides _toggle_theme(), _repaint_all(), and the colour-swap helpers
-that live-update every child widget when the user switches dark ↔ light.
+Provides _toggle_theme(), _repaint_all(), and the color-swap helpers
+that live-update every child widget when the user switches dark <-> light.
 """
 
 from src.theme import _theme, _DARK, _LIGHT, BG, FG, FG2, FG3, BORDER, SURFACE, DANGER
@@ -14,7 +14,7 @@ class ThemeMixin:
     Requires self._dark_mode (bool) and self._theme_btn to be set by App.__init__.
     """
 
-    # == Public toggle ==========================================================
+    # Public toggle
 
     def _toggle_theme(self):
         self._dark_mode = not self._dark_mode
@@ -27,7 +27,7 @@ class ThemeMixin:
         self.configure(bg=BG())
         self._repaint_all(self)
 
-    # == Recursive repaint ======================================================
+    # Recursive repaint
 
     def _repaint_all(self, widget):
         self._repaint_widget(widget)
@@ -37,19 +37,29 @@ class ThemeMixin:
     def _repaint_widget(self, w):
         cls = w.winfo_class()
         try:
-            if cls in ("Frame", "Label", "Button", "Canvas", "Menubutton"):
-                self._recolour(w, "bg")
-            if cls in ("Label", "Button", "Menubutton"):
-                self._recolour(w, "fg")
-            if cls in ("Button", "Menubutton"):
-                self._recolour(w, "activebackground")
-                self._recolour(w, "activeforeground")
+            if cls in (
+                "Frame", "Label", "Button", "Canvas", "Menubutton",
+                "Checkbutton", "Radiobutton", "Scale",
+            ):
+                self._recolor(w, "bg")
+            if cls in (
+                "Label", "Button", "Menubutton",
+                "Checkbutton", "Radiobutton", "Scale",
+            ):
+                self._recolor(w, "fg")
+            if cls in ("Button", "Menubutton", "Checkbutton", "Radiobutton"):
+                self._recolor(w, "activebackground")
+                self._recolor(w, "activeforeground")
+            if cls in ("Checkbutton", "Radiobutton"):
+                self._recolor(w, "selectcolor")
+            if cls == "Scale":
+                self._recolor(w, "troughcolor")
             if cls == "Entry":
                 for opt in ("bg", "fg", "insertbackground", "highlightbackground"):
-                    self._recolour(w, opt)
+                    self._recolor(w, opt)
             if cls == "Text":
-                self._recolour(w, "bg")
-                self._recolour(w, "fg")
+                self._recolor(w, "bg")
+                self._recolor(w, "fg")
                 try:
                     w.tag_configure("info",  foreground=FG2())
                     w.tag_configure("ok",    foreground=FG())
@@ -63,19 +73,19 @@ class ThemeMixin:
         except Exception:
             pass
 
-    # == Colour helpers =========================================================
+    # Color helpers
 
-    def _swap(self, colour: str) -> str:
-        """Map a hex colour from the old palette to the new one."""
+    def _swap(self, color: str) -> str:
+        """Map a hex color from the old palette to the new one."""
         old = _LIGHT if self._dark_mode else _DARK
         new = _DARK  if self._dark_mode else _LIGHT
-        c   = colour.lower()
+        c   = color.lower()
         for key, val in old.items():
             if c == val.lower() and key in new:
                 return new[key]
-        return colour
+        return color
 
-    def _recolour(self, widget, option: str):
+    def _recolor(self, widget, option: str):
         try:
             cur = widget.cget(option)
             if isinstance(cur, str) and cur.startswith("#"):

@@ -1,12 +1,4 @@
-"""
-NetShare Player — Public tunnel (localhost.run via SSH)
-
-PublicTunnel manages a localhost.run SSH reverse tunnel with:
-  • Dual password system (tunnel vs. LAN passwords are independent)
-  • SSH keepalive options
-  • Automatic reconnect with exponential back-off (max 30 s)
-  • on_reconnecting callback for UI feedback
-"""
+"""Management for the public localhost.run reverse tunnel used by the server."""
 
 import re
 import subprocess
@@ -20,49 +12,45 @@ from src.utils.platform import PLATFORM
 
 class PublicTunnel:
 
-    _URL_PATTERN  = re.compile(r'https://[a-zA-Z0-9\-]+\.lhr\.life')
-    _RETRY_DELAYS = [3, 6, 12, 30]   # seconds between reconnect attempts
+    _URL_PATTERN = re.compile(r"https://[a-zA-Z0-9\-]+\.lhr\.life")
+    _RETRY_DELAYS = [3, 6, 12, 30]
 
     def __init__(self, port: int):
-        self._port    = port
+        self._port = port
         self._process: subprocess.Popen | None = None
-        self._thread:  threading.Thread | None = None
+        self._thread: threading.Thread | None = None
 
-        self._on_url:          Callable | None = None
-        self._on_error:        Callable | None = None
-        self._on_stop:         Callable | None = None
+        self._on_url: Callable | None = None
+        self._on_error: Callable | None = None
+        self._on_stop: Callable | None = None
         self._on_reconnecting: Callable | None = None
 
-        self._active  = False
+        self._active = False
         self._attempt = 0
-
-    # == Public control =========================================================
+        self._last_url = ""
 
     def start(
         self,
-        on_url:          Callable | None = None,
-        on_error:        Callable | None = None,
-        on_stop:         Callable | None = None,
+        on_url: Callable | None = None,
+        on_error: Callable | None = None,
+        on_stop: Callable | None = None,
         on_reconnecting: Callable | None = None,
     ):
-        """Launch the SSH tunnel in a background thread with auto-reconnect."""
-        self._on_url          = on_url
-        self._on_error        = on_error
-        self._on_stop         = on_stop
+        self._on_url = on_url
+        self._on_error = on_error
+        self._on_stop = on_stop
         self._on_reconnecting = on_reconnecting
-        self._active          = True
-        self._attempt         = 0
-        self._thread          = threading.Thread(
+        self._active = True
+        self._attempt = 0
+        self._last_url = ""
+        self._thread = threading.Thread(
             target=self._run_loop, daemon=True, name="tunnel"
         )
         self._thread.start()
 
     def stop(self):
-        """Terminate SSH and cancel any pending reconnect."""
         self._active = False
         self._kill_process()
-
-    # == Internal helpers =======================================================
 
     def _kill_process(self):
         if self._process:
@@ -79,7 +67,8 @@ class PublicTunnel:
     def _build_cmd(self, ssh_bin: str) -> list[str]:
         return [
             ssh_bin,
-            "-o", "StrictHostKeyChecking=no",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "BatchMode=yes",
             "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=3",
             "-o", "TCPKeepAlive=yes",
@@ -103,16 +92,10 @@ class PublicTunnel:
                 continue
         return None
 
-    # == Reconnect loop =========================================================
-
     def _run_loop(self):
-        """
-        Outer reconnect loop. Spawns a fresh SSH process on each iteration.
-        Retries with increasing back-off when the process exits unexpectedly.
-        """
         ssh_bin = self._find_ssh()
         if ssh_bin is None:
-            msg = "SSH not found — install OpenSSH or Git for Windows"
+            msg = "SSH not found - install OpenSSH or Git for Windows"
             state._emit(f"TUNNEL {msg}", "error")
             if self._on_error:
                 self._on_error(msg)
@@ -122,14 +105,13 @@ class PublicTunnel:
             self._attempt += 1
             if self._attempt > 1:
                 delay_idx = min(self._attempt - 2, len(self._RETRY_DELAYS) - 1)
-                delay     = self._RETRY_DELAYS[delay_idx]
+                delay = self._RETRY_DELAYS[delay_idx]
                 state._emit(
                     f"TUNNEL reconnecting in {delay}s  (attempt {self._attempt})...",
                     "dim",
                 )
                 if self._on_reconnecting:
                     self._on_reconnecting(delay, self._attempt)
-                # Interruptible sleep — check _active every 0.5 s
                 for _ in range(delay * 2):
                     if not self._active:
                         return
@@ -139,18 +121,14 @@ class PublicTunnel:
 
             success = self._run_once(ssh_bin)
             if not self._active:
-                break   # user stopped — don't reconnect
+                break
             if not success and self._attempt == 1:
-                break   # fatal on first attempt
+                break
 
         if self._on_stop:
             self._on_stop()
 
     def _run_once(self, ssh_bin: str) -> bool:
-        """
-        Spawn one SSH process and stream its output.
-        Returns True if the public URL was seen at least once.
-        """
         state._emit("TUNNEL starting localhost.run tunnel...", "dim")
         try:
             proc = subprocess.Popen(
@@ -167,7 +145,7 @@ class PublicTunnel:
             return False
 
         self._process = proc
-        url_found     = False
+        url_found = False
 
         try:
             for line in proc.stdout:
@@ -175,12 +153,13 @@ class PublicTunnel:
                 if not line:
                     continue
                 state._emit(f"TUNNEL {line}", "dim")
-                if not url_found:
-                    match = self._URL_PATTERN.search(line)
-                    if match:
-                        public_url = match.group(0)
-                        url_found  = True
-                        state._emit(f"TUNNEL public URL → {public_url}", "ok")
+                match = self._URL_PATTERN.search(line)
+                if match:
+                    public_url = match.group(0)
+                    url_found = True
+                    if public_url != self._last_url:
+                        self._last_url = public_url
+                        state._emit(f"TUNNEL public URL -> {public_url}", "ok")
                         if self._on_url:
                             self._on_url(public_url)
         except Exception as e:

@@ -1,14 +1,15 @@
 """
-NetShare Player — WebSocket manager & server thread
+WebSocket client registry and server thread for NetShare Server.
 
-WebSocketManager  : thread-safe client registry + broadcast helpers.
-_ws_handler       : per-connection coroutine (ping/pong, welcome frame).
-_run_ws_server    : asyncio event-loop entry point for the WS thread.
+WebSocketManager owns the connected client set, broadcasts file-change events,
+and coordinates shutdown from the Tkinter thread into the asyncio event loop.
 """
 
 import asyncio
+import hmac
 import json
 import threading
+from urllib.parse import parse_qs, unquote, urlparse
 
 import src.state as state
 from src.constants import VERSION
@@ -45,7 +46,7 @@ class WebSocketManager:
         with self._lock:
             return len(self._clients)
 
-    # == Broadcast ==============================================================
+    # Broadcast
 
     async def _broadcast(self, message: str):
         with self._lock:
@@ -82,19 +83,22 @@ class WebSocketManager:
             self._stop_event.set()
 
 
-# == Per-connection handler =====================================================
+# Per-connection handler
 
 async def _ws_handler(websocket):
     manager: WebSocketManager | None = state._ws_manager
     if manager is None:
         await websocket.close(1001, "Manager not initialized")
         return
+    if not _ws_authorized(websocket):
+        await websocket.close(1008, "Unauthorized")
+        return
     manager.add_client(websocket)
     await websocket.send(json.dumps({
         "type":    "welcome",
         "name":    state.SERVER_NAME,
         "version": VERSION,
-        "root":    str(state.ROOT_DIR),
+        "root":    state.ROOT_DIR.name or str(state.ROOT_DIR),
     }))
     try:
         async for raw in websocket:
@@ -110,7 +114,31 @@ async def _ws_handler(websocket):
         manager.remove_client(websocket)
 
 
-# == Server thread entry point ==================================================
+def _ws_authorized(websocket) -> bool:
+    if not state.LOCAL_PASSWORD:
+        return True
+    password = ""
+    try:
+        password = websocket.request_headers.get("X-Password", "")
+    except Exception:
+        pass
+    if not password:
+        try:
+            password = websocket.request.headers.get("X-Password", "")
+        except Exception:
+            pass
+    if not password:
+        try:
+            path = getattr(websocket, "path", "") or getattr(getattr(websocket, "request", None), "path", "")
+            params = parse_qs(urlparse(path).query)
+            password = params.get("password", [""])[0]
+        except Exception:
+            password = ""
+    password = unquote(password)
+    return hmac.compare_digest(password, state.LOCAL_PASSWORD)
+
+
+# Server thread entry point
 
 def _run_ws_server(host: str, port: int, manager: WebSocketManager):
     loop = asyncio.new_event_loop()
