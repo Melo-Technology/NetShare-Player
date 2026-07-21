@@ -28,7 +28,10 @@ from http.server import ThreadingHTTPServer
 class PairingPanelMixin:
 
     def _draw_write_pairing_placeholder(self):
-        for w in self._write_pairing_frame.winfo_children():
+        frame = getattr(self, "_write_pairing_frame", None)
+        if frame is None or not frame.winfo_exists():
+            return  # write-pairing now lives in Settings > Permissions; no-op on the main page
+        for w in frame.winfo_children():
             w.destroy()
         self._responsive_wrap(tk.Label(
             self._write_pairing_frame,
@@ -40,7 +43,10 @@ class PairingPanelMixin:
 
     def _draw_write_pairing_active(self, otp: str = ""):
         """Redraw the write-pairing section with a live countdown ring."""
-        for w in self._write_pairing_frame.winfo_children():
+        frame = getattr(self, "_write_pairing_frame", None)
+        if frame is None or not frame.winfo_exists():
+            return  # write-pairing now lives in Settings > Permissions; no-op on the main page
+        for w in frame.winfo_children():
             w.destroy()
 
         # cancel any running tick so we don't stack timers on refresh

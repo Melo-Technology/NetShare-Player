@@ -36,7 +36,13 @@ class PublicPanelMixin:
         if getattr(self, "_tunnel_active", False) and getattr(self, "_tunnel_url", ""):
             self._draw_public_active(self._tunnel_url)
 
+    def _public_section_alive(self) -> bool:
+        section = getattr(self, "_public_section", None)
+        return section is not None and section.winfo_exists()
+
     def _draw_public_offline_placeholder(self):
+        if not self._public_section_alive():
+            return  # sharing/tunnel controls now live in Settings > Tunnel/Sharing
         for w in self._public_section.winfo_children():
             w.destroy()
         self._responsive_wrap(tk.Label(self._public_section,
@@ -46,6 +52,8 @@ class PublicPanelMixin:
 
 
     def _draw_public_ready(self):
+        if not self._public_section_alive():
+            return  # sharing/tunnel controls now live in Settings > Tunnel/Sharing
         for w in self._public_section.winfo_children():
             w.destroy()
         self._responsive_wrap(tk.Label(self._public_section,
@@ -211,6 +219,8 @@ class PublicPanelMixin:
 
 
     def _draw_public_connecting(self):
+        if not self._public_section_alive():
+            return
         for w in self._public_section.winfo_children():
             w.destroy()
         self._responsive_wrap(tk.Label(self._public_section, text=f"*  {t('connecting')}",
@@ -218,6 +228,8 @@ class PublicPanelMixin:
 
 
     def _draw_public_reconnecting(self, delay: int, attempt: int):
+        if not self._public_section_alive():
+            return
         for w in self._public_section.winfo_children():
             w.destroy()
         self._responsive_wrap(tk.Label(self._public_section,
@@ -235,6 +247,8 @@ class PublicPanelMixin:
 
 
     def _draw_public_active(self, url: str):
+        if not self._public_section_alive():
+            return
         for w in self._public_section.winfo_children():
             w.destroy()
 
@@ -320,6 +334,7 @@ class PublicPanelMixin:
             cb.pack(anchor="w", fill="x")
 
         self._draw_public_access_key(
+            parent,
             t("admin_key_title"),
             state.ADMIN_PASSWORD,
             t("admin_key_description"),
@@ -330,13 +345,14 @@ class PublicPanelMixin:
             t("upload") if state.COMMUNITY_UPLOAD else t("no_upload"),
         ]
         self._draw_public_access_key(
+            parent,
             t("community_key_title"),
             state.COMMUNITY_PASSWORD,
             t("community_key_description", rights=", ".join(community_rights)),
         )
 
         local_pw_hint = self._password_var.get().strip()
-        tk.Label(self._public_section,
+        tk.Label(parent,
                  text=t(
                      "local_pw_unchanged",
                      status=t("set") if local_pw_hint else t("none"),
@@ -354,6 +370,8 @@ class PublicPanelMixin:
 
 
     def _draw_public_error(self, msg: str):
+        if not self._public_section_alive():
+            return
         for w in self._public_section.winfo_children():
             w.destroy()
         tk.Label(self._public_section, text=f"✕  {msg}",

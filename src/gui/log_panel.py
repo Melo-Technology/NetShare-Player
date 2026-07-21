@@ -32,11 +32,43 @@ class LogPanelMixin:
     def _log(self, msg: str, kind: str = "info"):
         from datetime import datetime
         ts = datetime.now().strftime("%H:%M:%S")
+        # Keep following live logs only while the user is already at the end.
+        # Scrolling upward pauses auto-follow so older entries remain readable.
+        was_at_bottom = self._log_text.yview()[1] >= 0.999
         self._log_text.configure(state="normal")
         self._log_text.insert("end", f"[{ts}]  ", "ts")
         self._log_text.insert("end", f"{msg}\n", kind)
-        self._log_text.see("end")
+        if was_at_bottom:
+            self._log_text.see("end")
         self._log_text.configure(state="disabled")
+
+
+    def _export_logs(self):
+        content = self._log_text.get("1.0", "end-1c").strip()
+        if not content:
+            messagebox.showinfo(t("log"), t("no_logs_to_export"), parent=self)
+            return
+        from datetime import datetime
+        filename = f"netshare-logs-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+        target = filedialog.asksaveasfilename(
+            parent=self,
+            title=t("export_logs"),
+            initialfile=filename,
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if not target:
+            return
+        try:
+            header = (
+                f"NetShare Player Server {VERSION}\n"
+                f"Exported: {datetime.now().isoformat(timespec='seconds')}\n"
+                f"{'=' * 72}\n"
+            )
+            Path(target).write_text(header + content + "\n", encoding="utf-8")
+            self._log(f"{t('logs_exported')}  {target}", "ok")
+        except OSError as exc:
+            messagebox.showerror(t("log"), str(exc), parent=self)
 
 
     def _add_incoming_line(self, msg: str, kind: str = "info"):

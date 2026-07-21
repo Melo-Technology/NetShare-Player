@@ -81,7 +81,28 @@ class ConfigSectionMixin:
             command=_toggle_pw_visibility,
         )
         self._pw_toggle_btn.pack(side="left", padx=(0, self._s(6)))
+        tk.Button(
+            pw_row, text=t("save"), font=(FONT_MONO, self._fs(7), "bold"),
+            fg=FG(), bg=SURFACE2(), activeforeground=BG(), activebackground=FG(),
+            relief="flat", bd=0, cursor="hand2", padx=self._s(8), pady=self._s(5),
+            command=self._save_local_password,
+        ).pack(side="left", padx=(0, self._s(6)))
         tk.Label(pw_row, text=t("lan_only"), font=(FONT_MONO, self._fs(7)),
+                 fg=FG3(), bg=BG()).pack(side="left")
+
+        reminder_row = tk.Frame(self._body, bg=BG())
+        reminder_row.pack(fill="x", padx=self._s(24), pady=(self._s(6), 0))
+        tk.Label(reminder_row, text=t("password_reminder_every"),
+                 font=(FONT_MONO, self._fs(7)), fg=FG3(), bg=BG()).pack(side="left")
+        tk.Spinbox(
+            reminder_row, from_=1, to=3650,
+            textvariable=self._password_reminder_days_var,
+            font=(FONT_MONO, self._fs(8)), fg=FG(), bg=SURFACE(),
+            buttonbackground=SURFACE2(), insertbackground=FG(),
+            relief="flat", bd=0, width=5,
+            highlightthickness=1, highlightbackground=BORDER(),
+        ).pack(side="left", padx=self._s(6), ipady=self._s(3))
+        tk.Label(reminder_row, text=t("days"), font=(FONT_MONO, self._fs(7)),
                  fg=FG3(), bg=BG()).pack(side="left")
 
         # Write permissions

@@ -37,12 +37,8 @@ class RemoteFlagsMixin:
 
         self._build_header()
         self._section_label(t("directory")); self._build_folder_section()
-        self._section_label(t("config"));    self._build_config_section()
         self._build_server_button()
-        self._build_sleep_button()
         self._build_addresses_section()
-        self._build_write_pairing_section()
-        self._build_public_section()
         self._build_incoming_section()
         self._build_log_section()
         self._build_footer()
@@ -65,20 +61,11 @@ class RemoteFlagsMixin:
                 port = DEFAULT_PORT
             ws_port = port + 1 if HAS_WEBSOCKETS else None
             self._update_addr_block(port, ws_port)
-            self._draw_write_pairing_active(self._write_otp)
-            self._show_sleep_btn()
-
-            if self._sleep_inhibit_enabled:
-                self._sleep_btn.configure(text=f"☀  {t('keep_awake_on')}")
-            else:
-                self._sleep_btn.configure(text=f"☾  {t('keep_awake')}")
-
-            if self._tunnel_url:
-                self._draw_public_active(self._tunnel_url)
-            elif self._tunnel_active:
-                self._draw_public_connecting()
-            else:
-                self._draw_public_ready()
+            # Write-pairing / keep-awake button / public-sharing panel used to
+            # be redrawn here too, back when they lived on the main page.
+            # They're Settings-modal content now (Permissions / Tunnel /
+            # Sharing); those sections pull current state fresh every time
+            # they're opened, so there's nothing to push into them here.
 
         self.after(0, lambda: self._canvas.yview_moveto(yview))
         self._apply_remote_flags_to_ui()  # re-apply after rebuilding UI

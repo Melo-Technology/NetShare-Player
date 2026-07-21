@@ -4,8 +4,10 @@ from pathlib import Path
 
 import tkinter as tk
 
+import src.state as state
+
 from src.constants import VERSION, MAX_HISTORY, FONT_MONO
-from src.i18n import LANGUAGES, t
+from src.i18n import t
 from src.theme import _theme, BG, SURFACE, SURFACE2, BORDER, FG, FG2, FG3
 
 
@@ -51,6 +53,11 @@ class HeaderSectionMixin:
         )
         self._theme_btn.pack(side="left")
 
+        # Sidebar (hamburger) toggle -- opens the menu drawer with
+        # Languages / Settings / Theme, see gui/sidebar.py
+        sidebar_btn = self._build_sidebar_toggle(subheader)
+        sidebar_btn.pack(side="left", padx=(self._s(8), 0))
+
         self._firebase_lbl = None
 
         status_frame = tk.Frame(subheader, bg=BG())
@@ -74,34 +81,6 @@ class HeaderSectionMixin:
                  font=(FONT_MONO, self._fs(8)), fg=FG3(), bg=BG()).pack(side="left")
         tk.Label(ver_frame, text="MÉLO TECHNOLOGY",
                  font=(FONT_MONO, self._fs(8)), fg=FG3(), bg=BG()).pack(side="right")
-
-        lang_frame = tk.Frame(self._body, bg=BG())
-        lang_frame.pack(fill="x", padx=self._s(24), pady=(self._s(10), 0))
-        tk.Label(lang_frame, text=t("language"),
-                 font=(FONT_MONO, self._fs(8)), fg=FG3(), bg=BG()).pack(side="left")
-        lang_menu = tk.OptionMenu(
-            lang_frame,
-            self._language_var,
-            *LANGUAGES.keys(),
-            command=self._change_language,
-        )
-        lang_menu.configure(
-            font=(FONT_MONO, self._fs(8)),
-            fg=FG(), bg=SURFACE(),
-            activebackground=SURFACE2(), activeforeground=FG(),
-            relief="flat", bd=0, cursor="hand2",
-            highlightthickness=1, highlightbackground=BORDER(),
-            width=4,
-        )
-        lang_menu.pack(side="right")
-        try:
-            lang_menu["menu"].configure(
-                font=(FONT_MONO, self._fs(8)),
-                fg=FG(), bg=SURFACE(),
-                activebackground=SURFACE2(), activeforeground=FG(),
-            )
-        except Exception:
-            pass
 
     # Folder section
 
@@ -134,21 +113,38 @@ class HeaderSectionMixin:
     def _refresh_history(self):
         for w in self._hist_outer.winfo_children():
             w.destroy()
-        if not self._folder_history:
-            return
-        tk.Label(self._hist_outer, text=t("recent"),
-                 font=(FONT_MONO, self._fs(8)), fg=FG3(), bg=BG()
-                 ).pack(side="left", padx=(0, self._s(8)))
-        for folder in reversed(self._folder_history[-MAX_HISTORY:]):
-            name = Path(folder).name or folder
-            btn  = tk.Button(
-                self._hist_outer, text=name[:14],
-                font=(FONT_MONO, self._fs(8)),
-                fg=FG2(), bg=BG(),
-                activebackground=SURFACE2(), activeforeground=FG(),
-                relief="flat", bd=0, cursor="hand2",
-                padx=self._s(8), pady=self._s(3),
-                highlightthickness=1, highlightbackground=BORDER(),
-                command=lambda f=folder: self._select_folder(f),
-            )
-            btn.pack(side="left", padx=(0, self._s(4)))
+        if self._folder_history:
+            recent_row = tk.Frame(self._hist_outer, bg=BG())
+            recent_row.pack(fill="x")
+            tk.Label(recent_row, text=t("recent"),
+                     font=(FONT_MONO, self._fs(8)), fg=FG3(), bg=BG()
+                     ).pack(side="left", padx=(0, self._s(8)))
+            for folder in reversed(self._folder_history[-MAX_HISTORY:]):
+                name = Path(folder).name or folder
+                btn = tk.Button(
+                    recent_row, text=name[:14], font=(FONT_MONO, self._fs(8)),
+                    fg=FG2(), bg=BG(), activebackground=SURFACE2(), activeforeground=FG(),
+                    relief="flat", bd=0, cursor="hand2", padx=self._s(8), pady=self._s(3),
+                    highlightthickness=1, highlightbackground=BORDER(),
+                    command=lambda f=folder: self._select_folder(f),
+                )
+                btn.pack(side="left", padx=(0, self._s(4)))
+
+        recommendations = state.recommended_folders(MAX_HISTORY)
+        if recommendations:
+            rec_row = tk.Frame(self._hist_outer, bg=BG())
+            rec_row.pack(fill="x", pady=(self._s(6), 0))
+            tk.Label(rec_row, text=t("recommended"),
+                     font=(FONT_MONO, self._fs(8)), fg=FG3(), bg=BG()
+                     ).pack(side="left", padx=(0, self._s(8)))
+            for item in recommendations:
+                folder = item["path"]
+                name = Path(folder).name or folder
+                tk.Button(
+                    rec_row, text=f"{name[:12]} ({item['share_count']})",
+                    font=(FONT_MONO, self._fs(8)), fg=FG2(), bg=BG(),
+                    activebackground=SURFACE2(), activeforeground=FG(),
+                    relief="flat", bd=0, cursor="hand2", padx=self._s(8), pady=self._s(3),
+                    highlightthickness=1, highlightbackground=BORDER(),
+                    command=lambda f=folder: self._select_folder(f),
+                ).pack(side="left", padx=(0, self._s(4)))

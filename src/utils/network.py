@@ -3,6 +3,7 @@
 import mimetypes
 import socket
 import struct
+from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote
@@ -13,29 +14,48 @@ import src.state as state
 # Local IP enumeration
 
 def get_local_ips() -> list[str]:
+    """Return the address clients should use to reach this computer.
+
+    The address selected by the system's default IPv4 route is preferred.  A
+    hostname lookup on Windows also returns Hyper-V, WSL and VPN addresses,
+    which produced valid-looking but unreachable QR codes for mobile clients.
+    """
+    primary_ip = None
+    route_socket = None
+    try:
+        route_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # UDP connect selects a route without sending traffic to this address.
+        route_socket.connect(("8.8.8.8", 80))
+        candidate = route_socket.getsockname()[0]
+        if _is_usable_ipv4(candidate):
+            primary_ip = candidate
+    except OSError:
+        pass
+    finally:
+        if route_socket is not None:
+            route_socket.close()
+
+    if primary_ip:
+        return [primary_ip]
+
     ips = []
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None):
             ip = info[4][0]
-            if (
-                ":" not in ip
-                and not ip.startswith("127.")
-                and not ip.startswith("169.254.")
-                and ip not in ips
-            ):
+            if _is_usable_ipv4(ip) and ip not in ips:
                 ips.append(ip)
-    except Exception:
-        pass
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        if ip not in ips:
-            ips.append(ip)
-        s.close()
-    except Exception:
+    except OSError:
         pass
     return ips or ["127.0.0.1"]
+
+
+def _is_usable_ipv4(ip: str) -> bool:
+    return (
+        ":" not in ip
+        and not ip.startswith("127.")
+        and not ip.startswith("169.254.")
+        and ip != "0.0.0.0"
+    )
 
 
 # Path safety
@@ -59,13 +79,89 @@ def safe_path(rel_path: str) -> Path | None:
 def file_info(path: Path, base: Path) -> dict:
     rel  = str(path.relative_to(base)).replace("\\", "/")
     stat = path.stat()
-    return {
+    info = {
         "name":     path.name,
         "path":     f"/{rel}",
         "is_dir":   path.is_dir(),
         "size":     stat.st_size if path.is_file() else None,
         "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
     }
+    if path.is_file() and path.suffix.lower() == ".mp3":
+        info.update(_cached_id3_metadata(str(path), stat.st_mtime_ns, stat.st_size))
+    return info
+
+
+@lru_cache(maxsize=4096)
+def _cached_id3_metadata(path: str, _mtime_ns: int, _size: int) -> dict:
+    return extract_id3_metadata(Path(path))
+
+
+def _decode_id3_text(frame: bytes) -> str:
+    if not frame:
+        return ""
+    encoding = frame[0]
+    payload = frame[1:]
+    codecs = {0: "latin-1", 1: "utf-16", 2: "utf-16-be", 3: "utf-8"}
+    try:
+        return payload.decode(codecs.get(encoding, "utf-8"), errors="replace").strip("\x00 ")
+    except (LookupError, UnicodeError):
+        return ""
+
+
+def extract_id3_metadata(file_path: Path) -> dict:
+    """Extract common ID3v2 text frames without adding a runtime dependency."""
+    wanted = {
+        "TIT2": "title",
+        "TPE1": "artist",
+        "TPE2": "album_artist",
+        "TALB": "album",
+        "TCON": "genre",
+        "TDRC": "year",
+        "TYER": "year",
+    }
+    metadata: dict[str, str] = {}
+    try:
+        with file_path.open("rb") as stream:
+            header = stream.read(10)
+            if len(header) < 10 or header[:3] != b"ID3":
+                return metadata
+            version = header[3]
+            tag_size = (
+                (header[6] & 0x7F) << 21
+                | (header[7] & 0x7F) << 14
+                | (header[8] & 0x7F) << 7
+                | (header[9] & 0x7F)
+            )
+            tag_data = stream.read(min(tag_size, 16 * 1024 * 1024))
+
+        offset = 0
+        while offset + 10 <= len(tag_data):
+            frame_id = tag_data[offset:offset + 4].decode("ascii", errors="ignore")
+            if not frame_id.strip("\x00"):
+                break
+            size_bytes = tag_data[offset + 4:offset + 8]
+            frame_size = (
+                ((size_bytes[0] & 0x7F) << 21)
+                | ((size_bytes[1] & 0x7F) << 14)
+                | ((size_bytes[2] & 0x7F) << 7)
+                | (size_bytes[3] & 0x7F)
+                if version >= 4
+                else struct.unpack(">I", size_bytes)[0]
+            )
+            offset += 10
+            if frame_size <= 0 or offset + frame_size > len(tag_data):
+                break
+            if frame_id in wanted:
+                value = _decode_id3_text(tag_data[offset:offset + frame_size])
+                if value:
+                    metadata[wanted[frame_id]] = value
+            offset += frame_size
+    except (OSError, ValueError, struct.error):
+        return {}
+
+    if not metadata.get("artist") and metadata.get("album_artist"):
+        metadata["artist"] = metadata["album_artist"]
+    return metadata
 
 
 # Cover art (ID3 APIC extractor)

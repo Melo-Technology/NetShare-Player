@@ -8,9 +8,9 @@ from src.theme import BG, SURFACE, BORDER, FG, FG2, FG3
 
 
 class PublicAccessKeyMixin:
-    def _draw_public_access_key(self, title: str, key: str, description: str):
+    def _draw_public_access_key(self, parent, title: str, key: str, description: str):
         row = tk.Frame(
-            self._public_section,
+            parent,
             bg=SURFACE(),
             highlightthickness=1,
             highlightbackground=BORDER(),

@@ -92,11 +92,21 @@ class PublicTunnel:
                 continue
         return None
 
+    def _log_prefix(self) -> str:
+        return "TUNNEL"
+
+    def _find_executable(self) -> str | None:
+        return self._find_ssh()
+
+    def _missing_executable_message(self) -> str:
+        return "SSH not found - install OpenSSH or Git for Windows"
+
     def _run_loop(self):
-        ssh_bin = self._find_ssh()
-        if ssh_bin is None:
-            msg = "SSH not found - install OpenSSH or Git for Windows"
-            state._emit(f"TUNNEL {msg}", "error")
+        executable = self._find_executable()
+        prefix = self._log_prefix()
+        if executable is None:
+            msg = self._missing_executable_message()
+            state._emit(f"{prefix} {msg}", "error")
             if self._on_error:
                 self._on_error(msg)
             return
@@ -106,10 +116,7 @@ class PublicTunnel:
             if self._attempt > 1:
                 delay_idx = min(self._attempt - 2, len(self._RETRY_DELAYS) - 1)
                 delay = self._RETRY_DELAYS[delay_idx]
-                state._emit(
-                    f"TUNNEL reconnecting in {delay}s  (attempt {self._attempt})...",
-                    "dim",
-                )
+                state._emit(f"{prefix} reconnecting in {delay}s  (attempt {self._attempt})...", "dim")
                 if self._on_reconnecting:
                     self._on_reconnecting(delay, self._attempt)
                 for _ in range(delay * 2):
@@ -119,7 +126,7 @@ class PublicTunnel:
                 if not self._active:
                     return
 
-            success = self._run_once(ssh_bin)
+            success = self._run_once(executable)
             if not self._active:
                 break
             if not success and self._attempt == 1:

@@ -10,10 +10,15 @@ API routes used by the Flutter mobile client:
     GET /file           full / ranged file download
     GET /thumbnail      image thumbnail (Pillow) or video frame (ffmpeg)
     GET /art            MP3 cover-art extraction
+    GET /waveform       cached audio peak extraction (ffmpeg)
     GET /document       read text document (UTF-8)
     GET /setup-totp     local pairing QR + secret
+    GET /cloud/accounts connected cloud provider accounts (Drive/Dropbox/Mega)
+    GET /cloud/list     browse a cloud account's folder (?provider=&account=&folder=)
+    GET /cloud/file     stream/download a cloud file (?provider=&account=&id=), Range-aware
     POST /register-device trust a local device with TOTP
     POST /upload        file upload with optional overwrite
+    POST /redeem         redeem a premium-folder unlock code
     PUT /document       write text document (UTF-8)
 """
 
@@ -21,6 +26,7 @@ import json
 import mimetypes
 import os
 import socket
+import subprocess
 import time
 import hmac
 import ipaddress
@@ -33,6 +39,15 @@ from urllib.parse import parse_qs, unquote, urlparse, quote
 import src.state as state
 from src.constants import VERSION
 from src.deps import HAS_PIL, HAS_FFMPEG, FFMPEG_BIN
+from src.core import unlock_codes, session_sync
+from src.core.media_analysis import ANALYSIS_VERSION, is_audio
+from src.core.hidden_folders import (
+    HIDDEN_MARKER_FILENAME,
+    is_hidden_folder,
+    is_inside_hidden_folder,
+    mark_hidden,
+)
+from src.core.cloud import get_manager, CloudProviderError
 from src.utils.network import safe_path, file_info, extract_cover_from_mp3
 
 if HAS_PIL:
@@ -66,14 +81,7 @@ def _is_tunnel_request(handler) -> bool:
     the X-Tunnel: 1 header that the Flutter app sets when using the public URL.
     We only honour this header when TUNNEL_ACTIVE is True, preventing spoofing.
     """
-    if not state.TUNNEL_ACTIVE:
-        return False
-    if handler.headers.get("X-Tunnel", "").strip() != "1":
-        return False
-    try:
-        return ipaddress.ip_address(handler.client_address[0]).is_loopback
-    except ValueError:
-        return False
+    return bool(getattr(handler.server, "is_public_listener", False))
 
 
 def _is_lan_request(handler) -> bool:
@@ -164,6 +172,12 @@ class NetShareHandler(BaseHTTPRequestHandler):
     def _rate_key(self, scope: str) -> str:
         return f"{scope}:{self.client_address[0]}"
 
+    def _reject_spoofed_tunnel_header(self) -> bool:
+        if not _is_tunnel_request(self) and self.headers.get("X-Tunnel") is not None:
+            self.send_error_json("X-Tunnel is not accepted on the LAN listener", 400)
+            return True
+        return False
+
     # Auth
 
     def _check_password(self) -> bool:
@@ -213,7 +227,19 @@ class NetShareHandler(BaseHTTPRequestHandler):
     def _has_full_write_access(self) -> bool:
         if _is_tunnel_request(self):
             return self._public_role() == "admin"
-        return state.is_trusted_device(self.headers.get("X-Device-ID", ""))
+        return self._has_device_credential()
+
+    def _device_credential(self) -> str:
+        authorization = self.headers.get("Authorization", "").strip()
+        if authorization.lower().startswith("bearer "):
+            return authorization[7:].strip()
+        return self.headers.get("X-Device-Credential", "").strip()
+
+    def _has_device_credential(self, device_id: str | None = None) -> bool:
+        return state.verify_device_credential(
+            device_id if device_id is not None else self._device_id(),
+            self._device_credential(),
+        )
 
     def _has_upload_access(self) -> bool:
         if _is_tunnel_request(self):
@@ -225,6 +251,50 @@ class NetShareHandler(BaseHTTPRequestHandler):
 
     def _community_home(self) -> str:
         return "/" if state.COMMUNITY_BROWSE_ROOT else "/incoming"
+
+    def _device_id(self) -> str:
+        header_id = unquote(self.headers.get("X-Device-ID", "")).strip()
+        if header_id:
+            return header_id
+        return unquote(
+            parse_qs(urlparse(self.path).query).get("device_id", [""])[0]
+        ).strip()
+
+    def _lock_status(self, rel_path: str) -> dict:
+        """Premium-folder lock status for rel_path, scoped to this device."""
+        device_id = self._device_id()
+        if not _is_tunnel_request(self) and not self._has_device_credential(device_id):
+            device_id = ""
+        return unlock_codes.lock_status_for_path(rel_path, device_id)
+
+    def _send_premium_locked(self, lock: dict):
+        return self.send_json({
+            "error": "premium_locked",
+            "folder_path": lock["folder_path"],
+            "label": lock["label"],
+            "price_note": lock["price_note"],
+        }, 403)
+
+    @staticmethod
+    def _cloud_premium_path(provider_id: str, account_id: str, item_id: str) -> str:
+        safe_item = quote(str(item_id or "root"), safe="")
+        return f"/cloud/{provider_id}/{account_id}/{safe_item}"
+
+    @staticmethod
+    def _cloud_virtual_path(provider_id: str, account_id: str, item_id=None) -> str:
+        base = f"/cloud/{quote(provider_id, safe='')}/{quote(account_id, safe='')}"
+        return base if item_id is None else f"{base}/{quote(str(item_id), safe='')}"
+
+    @staticmethod
+    def _parse_cloud_virtual_path(path: str):
+        parts = path.strip("/").split("/", 3)
+        if len(parts) < 3 or parts[0] != "cloud":
+            return None
+        return (
+            unquote(parts[1]),
+            unquote(parts[2]),
+            unquote(parts[3]) if len(parts) == 4 else "root",
+        )
 
     # OPTIONS (CORS pre-flight)
 
@@ -246,6 +316,11 @@ class NetShareHandler(BaseHTTPRequestHandler):
         endpoint = parsed.path.rstrip("/")
         params   = parse_qs(parsed.query)
 
+        if self._reject_spoofed_tunnel_header():
+            return
+        if _is_tunnel_request(self) and not state.general_request_allowed(self._rate_key("traffic")):
+            return self.send_error_json("Too many requests", 429)
+
         if endpoint == "/ping":
             self._route_ping(params)
             return
@@ -262,12 +337,20 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self._route_list(params)
         elif endpoint == "/search":
             self._route_search(params)
+        elif endpoint == "/media-analysis":
+            self._route_media_analysis(params)
+        elif endpoint == "/session-groups/state":
+            self._route_session_group_state(params)
+        elif endpoint == "/session-groups/members":
+            self._route_session_group_members(params)
         elif endpoint == "/file":
             self._route_file(params)
         elif endpoint == "/thumbnail":
             self._route_thumbnail(params)
         elif endpoint == "/art":
             self._route_art(params)
+        elif endpoint == "/waveform":
+            self._route_waveform(params)
         elif endpoint == "/document":
             if not self._has_full_write_access():
                 self.send_error_json("Trusted device or admin key required", 403)
@@ -278,6 +361,12 @@ class NetShareHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Trusted device or upload key required", 403)
                 return
             self._route_upload_request_status(params)
+        elif endpoint == "/cloud/accounts":
+            self._route_cloud_accounts()
+        elif endpoint == "/cloud/list":
+            self._route_cloud_list(params)
+        elif endpoint == "/cloud/file":
+            self._route_cloud_file(params)
         else:
             self.send_error_json("Unknown endpoint", 404)
 
@@ -288,14 +377,37 @@ class NetShareHandler(BaseHTTPRequestHandler):
         endpoint = parsed.path.rstrip("/")
         params   = parse_qs(parsed.query)
 
+        if self._reject_spoofed_tunnel_header():
+            return
+        if _is_tunnel_request(self) and not state.general_request_allowed(self._rate_key("traffic")):
+            return self.send_error_json("Too many requests", 429)
+
         if endpoint == "/register-device":
             self._route_register_device()
+            return
+
+        if endpoint == "/session-groups/link":
+            self._route_session_group_link()
+            return
+
+        if endpoint == "/session-groups/invite":
+            self._route_session_group_invite()
             return
 
         if not self._check_password():
             self.send_error_json("Too many auth attempts" if getattr(self, "_auth_rate_limited", False) else "Unauthorized", 429 if getattr(self, "_auth_rate_limited", False) else 401)
             return
-        if endpoint == "/upload":
+        if endpoint == "/redeem":
+            self._route_redeem()
+        elif endpoint == "/session-groups/ping":
+            self._route_session_group_ping()
+        elif endpoint == "/session-groups/leave":
+            self._route_session_group_leave()
+        elif endpoint == "/session-groups/remove":
+            self._route_session_group_remove()
+        elif endpoint == "/device/migrate":
+            self._route_device_migrate()
+        elif endpoint == "/upload":
             if not self._has_upload_access():
                 self.send_error_json("Trusted device or upload key required", 403)
                 return
@@ -312,6 +424,11 @@ class NetShareHandler(BaseHTTPRequestHandler):
         parsed   = urlparse(self.path)
         endpoint = parsed.path.rstrip("/")
         params   = parse_qs(parsed.query)
+
+        if self._reject_spoofed_tunnel_header():
+            return
+        if _is_tunnel_request(self) and not state.general_request_allowed(self._rate_key("traffic")):
+            return self.send_error_json("Too many requests", 429)
 
         if not self._check_password():
             self.send_error_json("Too many auth attempts" if getattr(self, "_auth_rate_limited", False) else "Unauthorized", 429 if getattr(self, "_auth_rate_limited", False) else 401)
@@ -341,6 +458,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
                 pass
         self.send_json({
             "name":               state.SERVER_NAME,
+            "server_id":          state.SERVER_ID,
             "version":            VERSION,
             "root":               state.ROOT_DIR.name or str(state.ROOT_DIR),
             "ws_port":            ws_port,
@@ -353,7 +471,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
             "access_mode":        "tunnel" if via_tunnel else "local",
             "mode":               "public" if via_tunnel else "local",
             "public_role":        public_role,
-            "trusted":            state.is_trusted_device(device_id) if device_id and not via_tunnel else False,
+            "trusted":            self._has_device_credential(device_id) if device_id and not via_tunnel else False,
             "features": {
                 "upload":          bool(state.FEATURE_FLAGS.get("upload"))
                                    and (public_role != "community" or state.COMMUNITY_UPLOAD),
@@ -417,17 +535,93 @@ class NetShareHandler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return self.send_error_json("Invalid JSON body", 400)
-        if not state.register_device(
+        credential = state.register_device(
             str(payload.get("device_id", "")).strip(),
             str(payload.get("code", "")).strip(),
-        ):
+        )
+        if not credential:
             state.record_auth_failure(key)
             return self.send_error_json("Invalid TOTP code", 403)
         state.clear_auth_failures(key)
-        self.send_json({"ok": True})
+        self.send_json({"ok": True, "device_credential": credential})
+
+    def _route_redeem(self):
+        """Redeem a premium-folder unlock code for the requesting device."""
+        if not _is_tunnel_request(self) and not self._has_device_credential():
+            return self.send_error_json("Valid device credential required", 403)
+        key = self._rate_key("redeem")
+        if not state.auth_attempt_allowed(key):
+            return self.send_error_json("Too many redeem attempts", 429)
+        body = self._read_body(4 * 1024)
+        if body is None:
+            return
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self.send_error_json("Invalid JSON body", 400)
+        code = str(payload.get("code", "")).strip()
+        device_id = str(payload.get("device_id", "")).strip()
+        if not code or not device_id:
+            return self.send_error_json("Missing 'code' or 'device_id'", 400)
+        result = unlock_codes.redeem_code(code, device_id)
+        if result["status"] == "ok":
+            state.clear_auth_failures(key)
+            state._emit(
+                f"PREMIUM code redeemed for {result['folder_path']}  [{self.client_address[0]}]",
+                "ok",
+            )
+            return self.send_json(result)
+        state.record_auth_failure(key)
+        status_codes = {
+            "invalid": 404,
+            "revoked": 403,
+            "expired": 410,
+            "already_used": 409,
+        }
+        self.send_json(result, status_codes.get(result["status"], 400))
+
+    def _route_device_migrate(self):
+        """Replace a legacy app-install ID with a per-server pseudonym."""
+        body = self._read_body(4 * 1024)
+        if body is None:
+            return
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self.send_error_json("Invalid JSON body", 400)
+        previous = str(payload.get("previous_device_id", "")).strip()
+        current = str(payload.get("device_id", "")).strip()
+        if not previous or not current:
+            return self.send_error_json("Missing device identifiers", 400)
+        if not state.verify_device_credential(previous, self._device_credential()):
+            return self.send_error_json("Previous device credential required", 403)
+        challenge = str(payload.get("challenge", "")).strip()
+        if not challenge:
+            return self.send_json({
+                "status": "challenge",
+                "challenge": state.create_migration_challenge(previous, current),
+                "expires_in": state.MIGRATION_CHALLENGE_TTL_SECONDS,
+            })
+        if not state.consume_migration_challenge(challenge, previous, current):
+            return self.send_error_json("Invalid or expired migration challenge", 403)
+        migrated_grants = unlock_codes.migrate_device_id(previous, current)
+        migrated_trust = state.migrate_trusted_device(previous, current)
+        state._emit(
+            f"DEVICE migration succeeded {previous[-6:]} -> {current[-6:]} "
+            f"[{self.client_address[0]}]",
+            "ok",
+        )
+        self.send_json({
+            "ok": True,
+            "migrated_grants": migrated_grants,
+            "migrated_trust": migrated_trust,
+        })
 
     def _route_list(self, params):
         rel    = params.get("path", ["/"])[0]
+        cloud_path = self._parse_cloud_virtual_path(rel)
+        if cloud_path:
+            return self._route_cloud_virtual_list(*cloud_path)
         if _is_tunnel_request(self) and self._public_role() == "community":
             if not state.COMMUNITY_BROWSE_ROOT:
                 rel = "/incoming"
@@ -440,8 +634,18 @@ class NetShareHandler(BaseHTTPRequestHandler):
             return self.send_error_json("Invalid path", 403)
         if not target.exists():
             return self.send_error_json("Directory not found", 404)
+        if is_inside_hidden_folder(target, state.ROOT_DIR):
+            return self.send_error_json("Directory not found", 404)
         if not target.is_dir():
             return self.send_error_json("Not a directory", 400)
+        lock = self._lock_status(rel)
+        if lock["locked"]:
+            return self.send_json({
+                "error": "premium_locked",
+                "folder_path": lock["folder_path"],
+                "label": lock["label"],
+                "price_note": lock["price_note"],
+            }, 403)
         try:
             items = []
             for entry in sorted(
@@ -449,11 +653,37 @@ class NetShareHandler(BaseHTTPRequestHandler):
                 key=lambda e: (not e.is_dir(), e.name.lower()),
             ):
                 try:
-                    if entry.name.startswith("."):
+                    if (entry.name.startswith(".") or
+                            entry.name in (unlock_codes.MARKER_FILENAME, HIDDEN_MARKER_FILENAME) or
+                            (entry.is_dir() and is_hidden_folder(entry))):
                         continue
-                    items.append(file_info(entry, state.ROOT_DIR))
+                    info = file_info(entry, state.ROOT_DIR)
+                    if entry.is_file() and is_audio(entry):
+                        from src.core.file_index import _file_index
+                        info["loudness_gain"] = _file_index.loudness_gain(info["path"])
+                        info["bpm"] = _file_index.bpm(info["path"])
+                    if entry.is_dir() and unlock_codes.is_premium_folder(info["path"]):
+                        sub_lock = self._lock_status(info["path"])
+                        info["premium"] = True
+                        info["locked"] = sub_lock["locked"]
+                        info["premium_label"] = sub_lock.get("label", "")
+                        info["premium_price_note"] = sub_lock.get("price_note", "")
+                    items.append(info)
                 except (PermissionError, OSError):
                     pass
+            if rel in ("/", ""):
+                for account in reversed(get_manager().connected_accounts()):
+                    provider_id = account.get("provider_id", "")
+                    account_id = account.get("account_id", "")
+                    if provider_id and account_id:
+                        items.insert(0, {
+                            "name": account.get("label") or f"{provider_id} cloud",
+                            "path": self._cloud_virtual_path(provider_id, account_id),
+                            "is_dir": True,
+                            "size": None,
+                            "modified": "",
+                            "cloud_provider": provider_id,
+                        })
             self.send_json(items)
         except PermissionError:
             self.send_error_json("Permission denied", 403)
@@ -473,7 +703,8 @@ class NetShareHandler(BaseHTTPRequestHandler):
         if params.get("ready"):
             return self.send_json({"ready": _file_index.ready, "total": _file_index.total})
         query = params.get("q", [""])[0]
-        if not query.strip():
+        file_type = params.get("type", ["all"])[0]
+        if not query.strip() and file_type.lower() == "all":
             return self.send_json({"items": [], "total": 0, "offset": 0, "has_more": False})
         try:
             limit  = min(int(params.get("limit",  ["50"])[0]), 200)
@@ -483,8 +714,328 @@ class NetShareHandler(BaseHTTPRequestHandler):
             offset = max(int(params.get("offset", ["0"])[0]), 0)
         except (ValueError, IndexError):
             offset = 0
-        file_type = params.get("type", ["all"])[0]
-        self.send_json(_file_index.search(query, limit=limit, offset=offset, file_type=file_type))
+        result = _file_index.search(query, limit=limit, offset=offset, file_type=file_type)
+        device_id = self._device_id()
+        for item in result.get("items", []):
+            lock = unlock_codes.lock_status_for_path(item["path"], device_id)
+            if lock["locked"]:
+                item["locked"] = True
+                item["premium_label"] = lock.get("label", "")
+            if is_audio(Path(item["name"])):
+                item["loudness_gain"] = item.get("loudness_gain")
+                item["bpm"] = item.get("bpm")
+        self.send_json(result)
+
+    def _route_media_analysis(self, params):
+        """Return heavier analysis only when a client opens one audio file."""
+        from src.core.file_index import _file_index
+        rel = params.get("path", [""])[0]
+        target = safe_path(rel) if rel else None
+        if target is None:
+            return self.send_error_json("Invalid or missing path", 403)
+        if not target.is_file() or not is_audio(target):
+            return self.send_error_json("Audio file not found", 404)
+        lock = self._lock_status(rel)
+        if lock["locked"]:
+            return self.send_error_json("Premium content locked", 403)
+        analysis = _file_index.get_analysis(rel)
+        if not analysis or analysis.get("analysis_version") != ANALYSIS_VERSION:
+            _file_index.schedule_analysis(rel, target)
+            return self.send_json({"status": "pending", "path": rel}, 202)
+        return self.send_json({"status": "ready", "path": rel, **analysis})
+
+    def _session_local_guard(self) -> bool:
+        if _is_tunnel_request(self) or not _is_lan_request(self):
+            self.send_error_json("Local network only", 403)
+            return False
+        if not self._check_password():
+            self.send_error_json("Unauthorized", 401)
+            return False
+        if not self._has_device_credential():
+            self.send_error_json("Valid device credential required", 403)
+            return False
+        return True
+
+    def _route_session_group_link(self):
+        if not self._session_local_guard():
+            return
+        body = self._read_body(16 * 1024)
+        if body is None:
+            return
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self.send_error_json("Invalid JSON body", 400)
+        device_id = str(payload.get("device_id", "")).strip()
+        if device_id != self._device_id() or not self._has_device_credential(device_id):
+            return self.send_error_json("Trusted device required", 403)
+        rate_key = self._rate_key("totp-session-link")
+        if not state.auth_attempt_allowed(rate_key):
+            return self.send_error_json("Too many TOTP attempts", 429)
+        if not state.verify_totp(str(payload.get("code", ""))):
+            state.record_auth_failure(rate_key)
+            return self.send_error_json("Invalid TOTP code", 403)
+        state.clear_auth_failures(rate_key)
+        invite = str(payload.get("invite_code", "")).strip()
+        result = (
+            session_sync.join_group(device_id, invite, str(payload.get("device_label", "")))
+            if invite else session_sync.create_group(
+                device_id, str(payload.get("group_name", "")),
+                str(payload.get("device_label", "")),
+            )
+        )
+        if result["status"] != "ok":
+            return self.send_json(result, 409 if result["status"] == "group_full" else 403)
+        self._add_session_qr(result)
+        self.send_json(result)
+
+    def _add_session_qr(self, result: dict):
+        if not result.get("invite_code"):
+            return
+        try:
+            import qrcode
+            qr_payload = json.dumps({"type": "netshare-session-group", "code": result["invite_code"]})
+            image = qrcode.make(qr_payload)
+            buffer = BytesIO()
+            image.save(buffer, format="PNG")
+            result["qr_png"] = base64.b64encode(buffer.getvalue()).decode("ascii")
+        except Exception:
+            result["qr_png"] = None
+
+    def _route_session_group_invite(self):
+        if not self._session_local_guard():
+            return
+        body = self._read_body(16 * 1024)
+        if body is None:
+            return
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self.send_error_json("Invalid JSON body", 400)
+        device_id = self._device_id()
+        if str(payload.get("device_id", "")).strip() != device_id:
+            return self.send_error_json("Device ID mismatch", 403)
+        rate_key = self._rate_key("totp-session-invite")
+        if not state.auth_attempt_allowed(rate_key):
+            return self.send_error_json("Too many TOTP attempts", 429)
+        if not state.verify_totp(str(payload.get("code", ""))):
+            state.record_auth_failure(rate_key)
+            return self.send_error_json("Invalid TOTP code", 403)
+        state.clear_auth_failures(rate_key)
+        result = session_sync.renew_invite(
+            str(payload.get("session_group_id", "")), device_id,
+        )
+        if result["status"] != "ok":
+            return self.send_json(result, 403)
+        self._add_session_qr(result)
+        self.send_json(result)
+
+    def _route_session_group_ping(self):
+        if not self._session_local_guard():
+            return
+        body = self._read_body(16 * 1024)
+        if body is None:
+            return
+        try:
+            payload = json.loads(body.decode("utf-8"))
+            device_id = self._device_id()
+            result = session_sync.update_state(
+                str(payload.get("session_group_id", "")), device_id,
+                str(payload.get("track_id", "")), int(payload.get("position_ms", 0)),
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return self.send_error_json("Invalid JSON body", 400)
+        self.send_json(result, 200 if result["status"] == "ok" else 403)
+
+    def _route_session_group_state(self, params):
+        if not self._session_local_guard():
+            return
+        result = session_sync.get_state(
+            params.get("session_group_id", [""])[0], self._device_id()
+        )
+        self.send_json(result, 200 if result["status"] == "ok" else 403)
+
+    def _route_session_group_members(self, params):
+        if not self._session_local_guard():
+            return
+        result = session_sync.list_members(
+            params.get("session_group_id", [""])[0], self._device_id()
+        )
+        self.send_json(result, 200 if result["status"] == "ok" else 403)
+
+    def _session_action_payload(self) -> dict | None:
+        body = self._read_body(16 * 1024)
+        if body is None:
+            return None
+        try:
+            payload = json.loads(body.decode("utf-8"))
+            if isinstance(payload, dict):
+                return payload
+            self.send_error_json("Invalid JSON body", 400)
+            return None
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.send_error_json("Invalid JSON body", 400)
+            return None
+
+    def _route_session_group_leave(self):
+        if not self._session_local_guard():
+            return
+        payload = self._session_action_payload()
+        if payload is None:
+            return
+        device_id = self._device_id()
+        if str(payload.get("device_id", "")).strip() != device_id:
+            return self.send_error_json("Device ID mismatch", 403)
+        result = session_sync.leave_group(
+            str(payload.get("session_group_id", "")), device_id,
+        )
+        self.send_json(result, 200 if result["status"] == "ok" else 403)
+
+    def _route_session_group_remove(self):
+        if not self._session_local_guard():
+            return
+        payload = self._session_action_payload()
+        if payload is None:
+            return
+        requester_id = self._device_id()
+        if str(payload.get("device_id", "")).strip() != requester_id:
+            return self.send_error_json("Device ID mismatch", 403)
+        result = session_sync.remove_member(
+            str(payload.get("session_group_id", "")), requester_id,
+            str(payload.get("target_device_id", "")).strip(),
+        )
+        status = 200 if result["status"] == "ok" else (404 if result["status"] == "not_found" else 403)
+        self.send_json(result, status)
+
+    # Cloud bridge routes (Feature 2)
+
+    def _route_cloud_virtual_list(self, provider_id, account_id, folder_id):
+        lock = self._lock_status(
+            self._cloud_premium_path(provider_id, account_id, folder_id)
+        )
+        if lock["locked"]:
+            return self._send_premium_locked(lock)
+        try:
+            entries = get_manager().list_files(provider_id, account_id, folder_id)
+        except CloudProviderError as e:
+            return self.send_json(
+                {"error": e.code, "message": str(e)},
+                self._CLOUD_ERROR_STATUS.get(e.code, 502),
+            )
+        out = []
+        for entry in entries:
+            item = dict(entry)
+            item["path"] = self._cloud_virtual_path(
+                provider_id, account_id, item.get("id", "")
+            )
+            item["cloud_provider"] = provider_id
+            premium_path = self._cloud_premium_path(
+                provider_id, account_id, item.get("id", "")
+            )
+            item_lock = unlock_codes.lock_status_for_path(
+                premium_path, self._device_id()
+            )
+            if unlock_codes.get_premium_info(premium_path) is not None:
+                item["premium"] = True
+                item["locked"] = item_lock["locked"]
+                item["premium_path"] = item_lock.get("folder_path")
+                item["premium_label"] = item_lock.get("label", "")
+                item["premium_price_note"] = item_lock.get("price_note", "")
+            out.append(item)
+        self.send_json(out)
+
+    _CLOUD_ERROR_STATUS = {
+        "not_connected": 404,
+        "missing_dependency": 503,
+        "auth_expired": 401,
+        "auth_failed": 401,
+        "quota_exceeded": 503,
+        "provider_error": 502,
+        "unknown_provider": 400,
+    }
+
+    def _route_cloud_accounts(self):
+        """List connected cloud accounts (metadata only, never tokens)."""
+        self.send_json(get_manager().connected_accounts())
+
+    def _route_cloud_list(self, params):
+        provider_id = params.get("provider", [""])[0]
+        account_id = params.get("account", [""])[0]
+        folder_id = params.get("folder", ["root"])[0]
+        refresh = bool(params.get("refresh", [""])[0])
+        if not provider_id or not account_id:
+            return self.send_error_json("Missing 'provider' or 'account'", 400)
+        folder_lock = self._lock_status(
+            self._cloud_premium_path(provider_id, account_id, folder_id)
+        )
+        if folder_lock["locked"]:
+            return self.send_json({
+                "error": "premium_locked",
+                "folder_path": folder_lock["folder_path"],
+                "label": folder_lock["label"],
+                "price_note": folder_lock["price_note"],
+            }, 403)
+        try:
+            entries = get_manager().list_files(
+                provider_id, account_id, folder_id, force_refresh=refresh
+            )
+        except CloudProviderError as e:
+            return self.send_json(
+                {"error": e.code, "message": str(e)},
+                self._CLOUD_ERROR_STATUS.get(e.code, 502),
+            )
+        out = []
+        device_id = self._device_id()
+        for entry in entries:
+            item = dict(entry)
+            premium_path = self._cloud_premium_path(provider_id, account_id, item.get("id", ""))
+            lock = unlock_codes.lock_status_for_path(premium_path, device_id)
+            if lock["locked"]:
+                item["premium"] = True
+                item["locked"] = True
+                item["premium_path"] = lock["folder_path"]
+                item["premium_label"] = lock.get("label", "")
+                item["premium_price_note"] = lock.get("price_note", "")
+            out.append(item)
+        self.send_json(out)
+
+    def _route_cloud_file(self, params):
+        provider_id = params.get("provider", [""])[0]
+        account_id = params.get("account", [""])[0]
+        file_id = params.get("id", [""])[0]
+        if not provider_id or not account_id or not file_id:
+            return self.send_error_json("Missing 'provider', 'account' or 'id'", 400)
+        lock = self._lock_status(self._cloud_premium_path(provider_id, account_id, file_id))
+        if lock["locked"]:
+            return self.send_json({
+                "error": "premium_locked",
+                "folder_path": lock["folder_path"],
+                "label": lock["label"],
+                "price_note": lock["price_note"],
+            }, 403)
+        range_header = self.headers.get("Range")
+        try:
+            result = get_manager().stream_file(provider_id, account_id, file_id, range_header)
+        except CloudProviderError as e:
+            return self.send_json(
+                {"error": e.code, "message": str(e)},
+                self._CLOUD_ERROR_STATUS.get(e.code, 502),
+            )
+        if result.error or result.chunks is None:
+            return self.send_json(
+                {"error": result.error or "provider_error"},
+                result.status if result.status >= 400 else 502,
+            )
+        try:
+            self.send_response(result.status)
+            for header, value in result.headers.items():
+                self.send_header(header, value)
+            self._send_cors_headers()
+            self.end_headers()
+            for chunk in result.chunks:
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client disconnected / seeked away mid-stream, not an error
 
     def _route_file(self, params):
         rel = params.get("path", [""])[0]
@@ -498,6 +1049,14 @@ class NetShareHandler(BaseHTTPRequestHandler):
                     return self.send_error_json("Invalid X-File-Path-B64 header", 400)
         if not rel:
             return self.send_error_json("Missing 'path' parameter", 400)
+        cloud_path = self._parse_cloud_virtual_path(rel)
+        if cloud_path:
+            provider_id, account_id, file_id = cloud_path
+            return self._route_cloud_file({
+                "provider": [provider_id],
+                "account": [account_id],
+                "id": [file_id],
+            })
         target = safe_path(rel)
         if target is None:
             return self.send_error_json("Invalid path", 403)
@@ -505,6 +1064,14 @@ class NetShareHandler(BaseHTTPRequestHandler):
             return self.send_error_json("File not found", 404)
         if not target.is_file():
             return self.send_error_json("Not a file", 400)
+        lock = self._lock_status(rel)
+        if lock["locked"]:
+            return self.send_json({
+                "error": "premium_locked",
+                "folder_path": lock["folder_path"],
+                "label": lock["label"],
+                "price_note": lock["price_note"],
+            }, 403)
         try:
             file_size = target.stat().st_size
             mime, _   = mimetypes.guess_type(str(target))
@@ -536,6 +1103,9 @@ class NetShareHandler(BaseHTTPRequestHandler):
         rel = params.get("path", [""])[0]
         if not rel:
             return self.send_error_json("Missing 'path' parameter", 400)
+        lock = self._lock_status(rel)
+        if lock["locked"]:
+            return self._send_premium_locked(lock)
         target = safe_path(rel)
         if target is None:
             return self.send_error_json("Invalid path", 403)
@@ -553,6 +1123,32 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self._serve_video_thumbnail(target, max_w, max_h)
         else:
             self._serve_image_thumbnail(target, max_w, max_h)
+
+    def _route_waveform(self, params):
+        rel = params.get("path", [""])[0]
+        if not rel:
+            return self.send_error_json("Missing 'path' parameter", 400)
+        lock = self._lock_status(rel)
+        if lock["locked"]:
+            return self._send_premium_locked(lock)
+        target = safe_path(rel)
+        if target is None:
+            return self.send_error_json("Invalid path", 403)
+        if not target.exists() or not target.is_file():
+            return self.send_error_json("File not found", 404)
+        try:
+            samples = int(params.get("samples", ["160"])[0])
+        except (TypeError, ValueError, IndexError):
+            samples = 160
+        try:
+            from src.core.waveform import extract_waveform
+            peaks = extract_waveform(target, samples)
+            self.send_json({"path": rel, "peaks": peaks, "cached": True})
+        except RuntimeError as error:
+            status = 501 if not HAS_FFMPEG else 422
+            self.send_error_json(f"Waveform unavailable: {error}", status)
+        except (OSError, subprocess.SubprocessError) as error:
+            self.send_error_json(f"Waveform error: {error}", 500)
 
     def _serve_video_thumbnail(self, target: "Path", max_w: int, max_h: int):
         """Extract a JPEG frame from a video file using ffmpeg."""
@@ -653,6 +1249,9 @@ class NetShareHandler(BaseHTTPRequestHandler):
         rel = params.get("path", [""])[0]
         if not rel:
             return self.send_error_json("Missing 'path' parameter", 400)
+        lock = self._lock_status(rel)
+        if lock["locked"]:
+            return self._send_premium_locked(lock)
         target = safe_path(rel)
         if target is None:
             return self.send_error_json("Invalid path", 403)
@@ -777,6 +1376,14 @@ class NetShareHandler(BaseHTTPRequestHandler):
             return self.send_error_json("Invalid path", 403)
         try:
             folder.mkdir(parents=True, exist_ok=True)
+            if not via_tunnel:
+                if mark_hidden(folder):
+                    from src.core.file_index import _file_index
+                    try:
+                        rel_folder = "/" + str(folder.relative_to(state.ROOT_DIR)).replace("\\", "/")
+                        _file_index.remove_tree(rel_folder)
+                    except ValueError:
+                        pass
         except OSError as e:
             return self.send_error_json(f"Upload directory unavailable: {e}", 500)
         if not folder.is_dir():
@@ -904,6 +1511,10 @@ class NetShareHandler(BaseHTTPRequestHandler):
         if not rel:
             self.send_error_json("Missing 'path' parameter", 400)
             return None
+        lock = self._lock_status(rel)
+        if lock["locked"]:
+            self._send_premium_locked(lock)
+            return None
         target = safe_path(rel)
         if target is None:
             self.send_error_json("Invalid path", 403)
@@ -956,6 +1567,12 @@ class NetShareHandler(BaseHTTPRequestHandler):
     _CHUNK = 8 * 1024 * 1024   # 8 MB write buffer
 
     def _serve_full(self, path: Path, size: int, mime: str):
+        if mime.startswith("video/"):
+            state._emit(
+                f"VIDEO 200 file={path.name!r} size={size} mime={mime} "
+                f"range={self.headers.get('Range')!r}",
+                "info",
+            )
         self.send_response(200)
         self.send_header("Content-Type",   mime)
         self.send_header("Content-Length", size)
@@ -982,12 +1599,36 @@ class NetShareHandler(BaseHTTPRequestHandler):
 
     def _serve_range(self, path: Path, size: int, mime: str, range_header: str):
         try:
-            byte_range = range_header.replace("bytes=", "")
-            parts      = byte_range.split("-")
-            start      = int(parts[0]) if parts[0] else 0
-            end        = int(parts[1]) if parts[1] else size - 1
-            end        = min(end, size - 1)
+            if not range_header.startswith("bytes=") or "," in range_header:
+                raise ValueError("unsupported range syntax")
+            byte_range = range_header[6:].strip()
+            parts = byte_range.split("-", 1)
+            if len(parts) != 2 or not any(parts):
+                raise ValueError("invalid byte range")
+
+            if not parts[0]:
+                # RFC 9110 suffix range: bytes=-N means the final N bytes.
+                suffix_length = int(parts[1])
+                if suffix_length <= 0:
+                    raise ValueError("invalid suffix length")
+                start = max(0, size - suffix_length)
+                end = size - 1
+            else:
+                start = int(parts[0])
+                end = int(parts[1]) if parts[1] else size - 1
+                end = min(end, size - 1)
+
+            if start < 0 or start >= size or end < start:
+                raise ValueError("unsatisfiable byte range")
             length     = end - start + 1
+
+            if mime.startswith("video/"):
+                state._emit(
+                    f"VIDEO 206 file={path.name!r} size={size} mime={mime} "
+                    f"range={range_header!r} content-range='bytes {start}-{end}/{size}' "
+                    f"length={length}",
+                    "info",
+                )
 
             self.send_response(206)
             self.send_header("Content-Type",   mime)
@@ -1013,7 +1654,18 @@ class NetShareHandler(BaseHTTPRequestHandler):
                     except BrokenPipeError:
                         break
                     remaining -= len(chunk)
-        except (ValueError, IndexError):
-            self._serve_full(path, size, mime)
+        except (ValueError, IndexError) as exc:
+            if mime.startswith("video/"):
+                state._emit(
+                    f"VIDEO 416 file={path.name!r} size={size} mime={mime} "
+                    f"range={range_header!r} reason={exc}",
+                    "error",
+                )
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", "0")
+            self._send_cors_headers()
+            self.end_headers()
         except (BrokenPipeError, ConnectionResetError):
             pass

@@ -18,6 +18,7 @@ import base64
 import hashlib
 import hmac
 import struct
+import uuid
 from pathlib import Path
 
 try:
@@ -94,6 +95,7 @@ def _load_config() -> dict:
 def _save_config():
     config_data = json.dumps({
         "totp_secret": TOTP_SECRET,
+        "server_id": SERVER_ID,
         "trusted_devices": TRUSTED_DEVICES,
         "community_password": COMMUNITY_PASSWORD,
         "admin_password": ADMIN_PASSWORD,
@@ -104,6 +106,10 @@ def _save_config():
         "max_uploads_per_hour": MAX_UPLOADS_PER_HOUR,
         "max_upload_size_mb": MAX_UPLOAD_SIZE_MB,
         "allowed_upload_extensions": sorted(ALLOWED_UPLOAD_EXTENSIONS),
+        "local_password": SAVED_LOCAL_PASSWORD,
+        "local_password_saved_at": LOCAL_PASSWORD_SAVED_AT,
+        "password_reminder_days": PASSWORD_REMINDER_DAYS,
+        "folder_share_history": FOLDER_SHARE_HISTORY,
     }, ensure_ascii=False, indent=2)
     try:
         _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -126,8 +132,9 @@ FEATURE_FLAGS: dict[str, bool] = {
 }
 
 TOTP_SECRET: str = str(_CONFIG.get("totp_secret") or pyotp.random_base32())
-TRUSTED_DEVICES: dict[str, float] = {
-    str(k): float(v)
+SERVER_ID: str = str(_CONFIG.get("server_id") or uuid.uuid4())
+TRUSTED_DEVICES: dict[str, object] = {
+    str(k): v
     for k, v in dict(_CONFIG.get("trusted_devices") or {}).items()
 }
 
@@ -147,6 +154,19 @@ ALLOWED_UPLOAD_EXTENSIONS: set[str] = set(_CONFIG.get("allowed_upload_extensions
     ".txt", ".md", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
     ".zip", ".rar", ".7z", ".tar", ".gz",
 })
+SAVED_LOCAL_PASSWORD = str(_CONFIG.get("local_password") or "")
+LOCAL_PASSWORD = SAVED_LOCAL_PASSWORD
+LOCAL_PASSWORD_SAVED_AT = float(_CONFIG.get("local_password_saved_at") or 0.0)
+PASSWORD_REMINDER_DAYS = max(1, int(_CONFIG.get("password_reminder_days") or 7))
+FOLDER_SHARE_HISTORY: list[dict] = [
+    {
+        "path": str(item.get("path") or ""),
+        "share_count": max(1, int(item.get("share_count") or 1)),
+        "last_shared_at": float(item.get("last_shared_at") or 0.0),
+    }
+    for item in list(_CONFIG.get("folder_share_history") or [])
+    if isinstance(item, dict) and item.get("path")
+]
 UPLOAD_RATE_LOCK = threading.RLock()
 PUBLIC_UPLOAD_STATS = {
     "received": 0,
@@ -158,6 +178,65 @@ PUBLIC_UPLOAD_GRANTS: dict[str, dict] = {}
 PUBLIC_UPLOAD_REQUEST_TTL_SECONDS = 2 * 60
 
 _save_config()
+
+
+def save_local_password(password: str, *, saved_at: float | None = None) -> None:
+    """Persist the LAN password and restart its change-reminder clock."""
+    global LOCAL_PASSWORD, SAVED_LOCAL_PASSWORD, LOCAL_PASSWORD_SAVED_AT
+    SAVED_LOCAL_PASSWORD = str(password).strip()
+    LOCAL_PASSWORD = SAVED_LOCAL_PASSWORD
+    LOCAL_PASSWORD_SAVED_AT = float(saved_at if saved_at is not None else time.time())
+    _save_config()
+
+
+def password_reminder_due(*, now: float | None = None) -> bool:
+    if not SAVED_LOCAL_PASSWORD or LOCAL_PASSWORD_SAVED_AT <= 0:
+        return False
+    current = float(now if now is not None else time.time())
+    return current >= LOCAL_PASSWORD_SAVED_AT + PASSWORD_REMINDER_DAYS * 86400
+
+
+def postpone_password_reminder(*, now: float | None = None) -> None:
+    global LOCAL_PASSWORD_SAVED_AT
+    LOCAL_PASSWORD_SAVED_AT = float(now if now is not None else time.time())
+    _save_config()
+
+
+def save_password_reminder_days(days: int) -> None:
+    """Persist the user-selected password reminder interval."""
+    global PASSWORD_REMINDER_DAYS
+    value = int(days)
+    if not 1 <= value <= 3650:
+        raise ValueError("password reminder must be between 1 and 3650 days")
+    PASSWORD_REMINDER_DAYS = value
+    _save_config()
+
+
+def record_folder_share(path: str, *, shared_at: float | None = None) -> None:
+    """Record a successful share, preserving frequency and recency."""
+    clean = str(Path(path).resolve())
+    timestamp = float(shared_at if shared_at is not None else time.time())
+    match = next((item for item in FOLDER_SHARE_HISTORY if item["path"] == clean), None)
+    if match is None:
+        FOLDER_SHARE_HISTORY.append({"path": clean, "share_count": 1, "last_shared_at": timestamp})
+    else:
+        match["share_count"] += 1
+        match["last_shared_at"] = timestamp
+    FOLDER_SHARE_HISTORY.sort(key=lambda item: item["last_shared_at"], reverse=True)
+    del FOLDER_SHARE_HISTORY[100:]
+    _save_config()
+
+
+def recommended_folders(limit: int = 3) -> list[dict]:
+    """Return existing folders ranked by share frequency, then recency."""
+    existing = [item.copy() for item in FOLDER_SHARE_HISTORY if Path(item["path"]).is_dir()]
+    existing.sort(key=lambda item: (item["share_count"], item["last_shared_at"]), reverse=True)
+    return existing[:max(0, int(limit))]
+
+
+def clear_folder_share_history() -> None:
+    FOLDER_SHARE_HISTORY.clear()
+    _save_config()
 
 WRITE_OTP:              str   = ""
 WRITE_OTP_EXPIRES_AT:   float = 0.0
@@ -171,6 +250,29 @@ AUTH_RATE_LIMIT_WINDOW_SECONDS = 5 * 60
 AUTH_RATE_LIMITS: dict[str, list[float]] = {}
 AUTH_RATE_LOCK = threading.RLock()
 
+# General traffic throttle for requests arriving through a public tunnel
+# (SSH or Cloudflare) -- distinct from AUTH_RATE_LIMITS, which only tracks
+# failed password/TOTP attempts. This one caps total request volume per IP
+# regardless of whether the request authenticates successfully, so a public
+# tunnel can't be hammered into a de-facto DoS against the local machine.
+GENERAL_RATE_LIMIT_MAX = 120
+GENERAL_RATE_LIMIT_WINDOW_SECONDS = 60
+GENERAL_RATE_LIMITS: dict[str, list[float]] = {}
+GENERAL_RATE_LOCK = threading.RLock()
+MIGRATION_CHALLENGE_TTL_SECONDS = 60
+MIGRATION_CHALLENGES: dict[str, dict] = {}
+
+
+def general_request_allowed(key: str) -> bool:
+    """Record this request and return False once the rolling-window cap is hit."""
+    now = time.time()
+    cutoff = now - GENERAL_RATE_LIMIT_WINDOW_SECONDS
+    with GENERAL_RATE_LOCK:
+        attempts = [ts for ts in GENERAL_RATE_LIMITS.get(key, []) if ts >= cutoff]
+        attempts.append(now)
+        GENERAL_RATE_LIMITS[key] = attempts
+        return len(attempts) <= GENERAL_RATE_LIMIT_MAX
+
 
 def verify_totp(code: str) -> bool:
     """Return True when *code* is a valid TOTP for this server."""
@@ -180,21 +282,63 @@ def verify_totp(code: str) -> bool:
     return bool(pyotp.TOTP(TOTP_SECRET).verify(clean, valid_window=1))
 
 
-def register_device(device_id: str, code: str) -> bool:
-    """Trust a device UUID after validating the current TOTP code."""
+def _credential_hash(credential: str) -> str:
+    return hashlib.sha256(str(credential).encode("utf-8")).hexdigest()
+
+
+def register_device(device_id: str, code: str) -> str | None:
+    """Trust a device and return its new opaque credential exactly once."""
     clean_id = str(device_id).strip()
     if not clean_id or not verify_totp(code):
-        return False
+        return None
+    credential = secrets.token_urlsafe(32)
     with WRITE_AUTH_LOCK:
-        TRUSTED_DEVICES[clean_id] = time.time()
+        TRUSTED_DEVICES[clean_id] = {
+            "paired_at": time.time(),
+            "credential_hash": _credential_hash(credential),
+        }
         _save_config()
-    return True
+    return credential
 
 
 def is_trusted_device(device_id: str) -> bool:
     """Return True when a device ID has already been registered as trusted."""
     clean_id = str(device_id or "").strip()
     return bool(clean_id and clean_id in TRUSTED_DEVICES)
+
+
+def verify_device_credential(device_id: str, credential: str) -> bool:
+    clean_id = str(device_id or "").strip()
+    record = TRUSTED_DEVICES.get(clean_id)
+    if not clean_id or not credential or not isinstance(record, dict):
+        return False
+    expected = str(record.get("credential_hash") or "")
+    return bool(expected and hmac.compare_digest(expected, _credential_hash(credential)))
+
+
+def create_migration_challenge(previous_id: str, current_id: str) -> str:
+    now = time.time()
+    challenge = secrets.token_urlsafe(24)
+    with WRITE_AUTH_LOCK:
+        MIGRATION_CHALLENGES.clear()
+        MIGRATION_CHALLENGES[_credential_hash(challenge)] = {
+            "previous_id": str(previous_id),
+            "current_id": str(current_id),
+            "expires_at": now + MIGRATION_CHALLENGE_TTL_SECONDS,
+        }
+    return challenge
+
+
+def consume_migration_challenge(challenge: str, previous_id: str, current_id: str) -> bool:
+    key = _credential_hash(challenge)
+    with WRITE_AUTH_LOCK:
+        record = MIGRATION_CHALLENGES.pop(key, None)
+    return bool(
+        record
+        and record["expires_at"] >= time.time()
+        and hmac.compare_digest(record["previous_id"], str(previous_id))
+        and hmac.compare_digest(record["current_id"], str(current_id))
+    )
 
 
 def revoke_device(device_id: str):
@@ -231,6 +375,18 @@ def record_upload_for_ip(ip: str):
 def save_public_config():
     """Persist the latest public-upload settings to disk."""
     _save_config()
+
+
+def migrate_trusted_device(previous_device_id: str, device_id: str) -> bool:
+    """Move a local trusted-device registration to its scoped replacement."""
+    previous = str(previous_device_id or "").strip()
+    current = str(device_id or "").strip()
+    if not previous or not current or previous == current or previous not in TRUSTED_DEVICES:
+        return False
+    registered_at = TRUSTED_DEVICES.pop(previous)
+    TRUSTED_DEVICES.setdefault(current, registered_at)
+    _save_config()
+    return True
 
 
 def create_public_upload_request(

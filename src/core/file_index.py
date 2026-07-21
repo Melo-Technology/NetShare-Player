@@ -1,3 +1,4 @@
+
 """
 File indexing and directory watching for NetShare Server.
 
@@ -11,11 +12,15 @@ import json
 import os
 import threading
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 import src.state as state
 from src.deps import HAS_WATCHDOG
+from src.core.hardware_profile import HARDWARE_PROFILE
+from src.core.media_analysis import ANALYSIS_VERSION, MediaAnalysisQueue, is_audio
+from src.core.hidden_folders import is_hidden_folder, is_inside_hidden_folder
 
 if HAS_WATCHDOG:
     from watchdog.observers import Observer
@@ -57,6 +62,8 @@ class FileIndex:
         self._dirty        = False
         self._flush_thread: threading.Thread | None = None
         self._flush_stop   = threading.Event()
+        self.profile       = HARDWARE_PROFILE
+        self._analysis     = MediaAnalysisQueue(self.profile, self._store_analysis)
 
     # Cache paths
 
@@ -76,7 +83,7 @@ class FileIndex:
     def search(self, query: str, limit=50, offset=0, file_type="all") -> dict:
         """Find matching files by name, optionally filtered to a specific media category."""
         q = query.strip().lower()
-        if not q:
+        if not q and (not file_type or file_type.lower() == "all"):
             return {"items": [], "total": 0, "offset": offset, "has_more": False}
         filter_type = file_type.lower() if file_type else "all"
         with self._lock:
@@ -90,9 +97,18 @@ class FileIndex:
                 matched = [
                     self._entries[i]
                     for i, name in enumerate(self._names_lc)
-                    if q in name
+                    if (not q or q in name)
                     and self._get_file_category(self._entries[i]["name"]) == filter_type
                 ]
+            matched = [
+                {
+                    key: value for key, value in entry.items()
+                    if key not in ("waveform", "integrated_lufs", "analysis_error",
+                                   "cue_out_seconds", "suggested_crossfade_seconds",
+                                   "duration_seconds", "analysis_version")
+                }
+                for entry in matched
+            ]
         total = len(matched)
         return {
             "items":    matched[offset:offset+limit],
@@ -103,7 +119,8 @@ class FileIndex:
 
     def add_file(self, path: Path, root: Path):
         """Add or update a single file entry in the in-memory index."""
-        if not path.is_file() or path.name.startswith("."):
+        if (not path.is_file() or path.name.startswith(".") or
+                is_inside_hidden_folder(path, root)):
             return
         try:
             stat  = path.stat()
@@ -121,11 +138,14 @@ class FileIndex:
                     if e["path"] == entry["path"]:
                         self._entries[i]  = entry
                         self._names_lc[i] = lc
+                        self._dirty = True
+                        self._analysis.submit(entry["path"], path)
                         return
                 self._entries.append(entry)
                 self._names_lc.append(lc)
                 self.total  += 1
                 self._dirty  = True
+            self._analysis.submit(entry["path"], path)
         except (PermissionError, OSError):
             pass
 
@@ -139,6 +159,23 @@ class FileIndex:
                     self.total  -= 1
                     self._dirty  = True
                     return
+
+    def remove_tree(self, rel_dir: str):
+        """Remove every indexed file below a directory that became hidden."""
+        prefix = "/" + str(rel_dir or "").strip("/\\")
+        prefix = prefix.rstrip("/") + "/"
+        with self._lock:
+            kept = [
+                (entry, name)
+                for entry, name in zip(self._entries, self._names_lc)
+                if not entry["path"].startswith(prefix)
+            ]
+            if len(kept) == len(self._entries):
+                return
+            self._entries = [entry for entry, _ in kept]
+            self._names_lc = [name for _, name in kept]
+            self.total = len(self._entries)
+            self._dirty = True
 
     def invalidate_cache(self, root):
         try:
@@ -159,6 +196,63 @@ class FileIndex:
             self.total     = 0
             self.ready     = False
             self._dirty    = False
+
+    def get_analysis(self, rel_path: str) -> dict | None:
+        """Return enriched media fields for one indexed file."""
+        with self._lock:
+            for entry in self._entries:
+                if entry["path"] == rel_path:
+                    fields = {
+                        key: entry.get(key)
+                        for key in ("analysis_version", "integrated_lufs", "loudness_gain", "waveform", "bpm",
+                                    "duration_seconds", "cue_out_seconds",
+                                    "suggested_crossfade_seconds", "analysis_error")
+                        if key in entry
+                    }
+                    return fields or None
+        return None
+
+    def loudness_gain(self, rel_path: str) -> float | None:
+        analysis = self.get_analysis(rel_path)
+        return analysis.get("loudness_gain") if analysis else None
+
+    def bpm(self, rel_path: str) -> float | None:
+        analysis = self.get_analysis(rel_path)
+        return analysis.get("bpm") if analysis else None
+
+    def schedule_analysis(self, rel_path: str, absolute_path: Path) -> bool:
+        # Interactive requests must jump ahead of the background migration.
+        return self._analysis.submit(rel_path, absolute_path, priority=True)
+
+    def rescan_media(self, root: Path):
+        """Forget enriched fields and progressively requeue all indexed audio."""
+        with self._lock:
+            for entry in self._entries:
+                for key in ("analysis_version", "integrated_lufs", "loudness_gain", "waveform", "bpm",
+                            "duration_seconds", "cue_out_seconds",
+                            "suggested_crossfade_seconds", "analysis_error"):
+                    entry.pop(key, None)
+            self._dirty = True
+        self._schedule_existing_audio(Path(root))
+
+    def _store_analysis(self, rel_path: str, result: dict):
+        with self._lock:
+            for entry in self._entries:
+                if entry["path"] == rel_path:
+                    entry.update(result)
+                    self._dirty = True
+                    break
+
+    def _schedule_existing_audio(self, root: Path):
+        """Low-priority migration: queue legacy audio after the base index is ready."""
+        with self._lock:
+            candidates = [
+                e["path"] for e in self._entries
+                if e.get("analysis_version") != ANALYSIS_VERSION
+                and is_audio(Path(e["name"]))
+            ]
+        for rel_path in candidates:
+            self._analysis.submit(rel_path, root / rel_path.lstrip("/"))
 
     def start_periodic_flush(self, root, interval: int = 300):
         self.stop_periodic_flush()
@@ -186,9 +280,11 @@ class FileIndex:
         if self._try_load_cache(root):
             self._apply_offline_diff(root)
             self._save_cache(root)
+            self._schedule_existing_audio(root)
             return
         self._scan(root)
         self._save_cache(root)
+        self._schedule_existing_audio(root)
 
     def _try_load_cache(self, root: Path) -> bool:
         cache_file = self._cache_path(root)
@@ -228,8 +324,11 @@ class FileIndex:
         on_disk = set()
         try:
             for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
                 base = Path(dirpath)
+                dirnames[:] = [
+                    d for d in dirnames
+                    if not d.startswith(".") and not is_hidden_folder(base / d)
+                ]
                 for fname in filenames:
                     if fname.startswith("."):
                         continue
@@ -290,7 +389,7 @@ class FileIndex:
             with self._lock:
                 entries = list(self._entries)
             payload = json.dumps(
-                {"root": str(root), "built_at": _time.time(), "entries": entries},
+                {"schema": 2, "root": str(root), "built_at": _time.time(), "entries": entries},
                 ensure_ascii=True,
             ).encode("utf-8")
             tmp = cache_file.with_suffix(".tmp")
@@ -305,33 +404,41 @@ class FileIndex:
     def _scan(self, root: Path):
         state._emit("INDEX  scanning... (first run - will be cached)", "dim")
         entries = []; names_lc = []; count = 0
-        try:
+
+        def paths():
             for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
                 base = Path(dirpath)
-                for fname in filenames:
-                    if fname.startswith("."):
-                        continue
-                    fpath = base / fname
-                    try:
-                        stat  = fpath.stat()
-                        rel   = str(fpath.relative_to(root)).replace("\\", "/")
-                        fname = fname.encode("utf-8", errors="replace").decode("utf-8")
-                        rel   = rel.encode("utf-8", errors="replace").decode("utf-8")
-                        entry = {
-                            "name":     fname,
-                            "path":     f"/{rel}",
-                            "is_dir":   False,
-                            "size":     stat.st_size,
-                            "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
-                        }
+                dirnames[:] = [
+                    d for d in dirnames
+                    if not d.startswith(".") and not is_hidden_folder(base / d)
+                ]
+                for filename in filenames:
+                    if not filename.startswith("."):
+                        yield base / filename
+
+        def inspect(fpath: Path):
+            try:
+                stat = fpath.stat()
+                rel = str(fpath.relative_to(root)).replace("\\", "/")
+                filename = fpath.name.encode("utf-8", errors="replace").decode("utf-8")
+                rel = rel.encode("utf-8", errors="replace").decode("utf-8")
+                return {
+                    "name": filename, "path": f"/{rel}", "is_dir": False,
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                }
+            except (PermissionError, OSError):
+                return None
+
+        try:
+            with ThreadPoolExecutor(max_workers=self.profile.workers, thread_name_prefix="index") as executor:
+                for entry in executor.map(inspect, paths()):
+                    if entry is not None:
                         entries.append(entry)
-                        names_lc.append(fname.lower())
+                        names_lc.append(entry["name"].lower())
                         count += 1
                         if count % 50_000 == 0:
                             state._emit(f"INDEX  {count:,} files...", "dim")
-                    except (PermissionError, OSError):
-                        pass
         except Exception as e:
             state._emit(f"INDEX  scan error: {e}", "error")
         with self._lock:

@@ -46,3 +46,20 @@ try:
     HAS_FIREBASE = True
 except ImportError:
     HAS_FIREBASE = False
+
+try:
+    import requests  # noqa: F401
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+
+try:
+    from cryptography.fernet import Fernet  # noqa: F401
+    HAS_CRYPTOGRAPHY = True
+except ImportError:
+    HAS_CRYPTOGRAPHY = False
+
+import shutil as _shutil
+MEGATOOLS_BIN: str | None = _shutil.which("megatools") or _shutil.which("megatools.exe")
+HAS_MEGATOOLS: bool = MEGATOOLS_BIN is not None
+MEGATOOLS_DOWNLOAD_URL = "https://megatools.megous.com/"

@@ -70,6 +70,39 @@ class WebSocketManager:
     def notify_file_change(self, path: str):
         self.broadcast_threadsafe(json.dumps({"type": "file_change", "path": path}))
 
+    def notify_address_changed(self, host: str, http_port: int, ws_port: int):
+        """Tell connected clients where to reconnect, then disconnect them."""
+        if self._loop and self._loop.is_running():
+            return asyncio.run_coroutine_threadsafe(
+                self._address_changed_sequence(host, http_port, ws_port), self._loop
+            )
+        return None
+
+    async def _address_changed_sequence(self, host: str, http_port: int, ws_port: int):
+        payload = json.dumps({
+            "type": "server_address_changed",
+            "message": "The server network address has changed.",
+            "host": host,
+            "http_port": http_port,
+            "ws_port": ws_port,
+            "http_url": f"http://{host}:{http_port}",
+            "ws_url": f"ws://{host}:{ws_port}",
+        })
+        with self._lock:
+            targets = set(self._clients)
+        for ws in targets:
+            try:
+                await ws.send(payload)
+            except Exception:
+                pass
+        # Give clients time to process the new address before closing the socket.
+        await asyncio.sleep(0.2)
+        for ws in targets:
+            try:
+                await ws.close(1012, "Server address changed")
+            except Exception:
+                pass
+
     def notify_server_stopping(self):
         if self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(
@@ -127,13 +160,6 @@ def _ws_authorized(websocket) -> bool:
             password = websocket.request.headers.get("X-Password", "")
         except Exception:
             pass
-    if not password:
-        try:
-            path = getattr(websocket, "path", "") or getattr(getattr(websocket, "request", None), "path", "")
-            params = parse_qs(urlparse(path).query)
-            password = params.get("password", [""])[0]
-        except Exception:
-            password = ""
     password = unquote(password)
     return hmac.compare_digest(password, state.LOCAL_PASSWORD)
 

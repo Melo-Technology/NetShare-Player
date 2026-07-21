@@ -20,11 +20,16 @@ from src.gui.config_section import ConfigSectionMixin
 from src.gui.header_section import HeaderSectionMixin
 from src.gui.layout import LayoutMixin
 from src.gui.log_panel import LogPanelMixin
+from src.gui.modals.base_modal import ModalMixin
+from src.gui.modals.language_modal import LanguageModalMixin
+from src.gui.modals.settings_modal import SettingsModalMixin
+from src.gui.modals.settings_sections import SettingsSectionsMixin
 from src.gui.pairing_panel import PairingPanelMixin
 from src.gui.public_access_key import PublicAccessKeyMixin
 from src.gui.public_panel import PublicPanelMixin
 from src.gui.remote_flags import RemoteFlagsMixin
 from src.gui.server_lifecycle import ServerLifecycleMixin
+from src.gui.sidebar import SidebarMixin
 from src.gui.theme_mixin import ThemeMixin
 from src.i18n import DEFAULT_LANGUAGE
 from src.theme import _theme, _DARK, BG
@@ -33,6 +38,11 @@ from src.utils.platform import PLATFORM
 
 class App(
     ThemeMixin,
+    ModalMixin,
+    LanguageModalMixin,
+    SettingsModalMixin,
+    SettingsSectionsMixin,
+    SidebarMixin,
     LayoutMixin,
     HeaderSectionMixin,
     ConfigSectionMixin,
@@ -84,6 +94,8 @@ class App(
         self._thread    = None
         self._running   = False
         self._ws_thread = None
+        self._network_monitor_job = None
+        self._advertised_ips: tuple[str, ...] = ()
 
         # Sleep inhibitor
         self._sleep_inhibit_enabled = False
@@ -95,6 +107,12 @@ class App(
         self._tunnel_pw       = ""
         self._public_btn      = None
         self._public_section  = None
+
+        # Cloudflare custom-domain tunnel state (Feature 3)
+        self._cf_tunnel        = None
+        self._cf_tunnel_active = False
+        self._cf_tunnel_url    = ""
+        self._cf_tunnel_hostname = ""
 
         # Remote flag cache (mirrors last fetch)
         # True  = feature enabled remotely   False = disabled remotely
@@ -108,7 +126,8 @@ class App(
         self._selected_folder  = tk.StringVar(value="")
         self._port_var         = tk.StringVar(value=str(DEFAULT_PORT))
         self._name_var         = tk.StringVar(value=socket.gethostname())
-        self._password_var     = tk.StringVar(value="")
+        self._password_var     = tk.StringVar(value=state.SAVED_LOCAL_PASSWORD)
+        self._password_reminder_days_var = tk.IntVar(value=state.PASSWORD_REMINDER_DAYS)
         self._language_var     = tk.StringVar(value=DEFAULT_LANGUAGE)
         self._allow_upload_var = tk.BooleanVar(value=False)
         self._allow_edit_var   = tk.BooleanVar(value=False)
@@ -129,7 +148,9 @@ class App(
             "documents": tk.BooleanVar(value=bool(state.ALLOWED_UPLOAD_EXTENSIONS & {".txt", ".md", ".pdf", ".doc", ".docx", ".xls", ".xlsx"})),
             "archives": tk.BooleanVar(value=bool(state.ALLOWED_UPLOAD_EXTENSIONS & {".zip", ".rar", ".7z", ".tar", ".gz"})),
         }
-        self._folder_history: list[str] = []
+        self._folder_history: list[str] = [
+            item["path"] for item in reversed(state.FOLDER_SHARE_HISTORY)
+        ]
 
         # Icon
         icon_path = Path(__file__).parent.parent.parent / "favicon.ico"

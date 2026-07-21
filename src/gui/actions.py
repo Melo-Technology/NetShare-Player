@@ -32,14 +32,17 @@ class ActionsMixin:
     def _toggle_sleep_inhibit(self):
         self._sleep_inhibit_enabled = not self._sleep_inhibit_enabled
         inhibit_sleep(self._sleep_inhibit_enabled)
+        sleep_btn = getattr(self, "_sleep_btn", None)
+        if sleep_btn is None or not sleep_btn.winfo_exists():
+            return  
         if self._sleep_inhibit_enabled:
-            self._sleep_btn.config(
+            sleep_btn.config(
                 text=f"☀  {t('keep_awake_on')}",
                 fg=FG(), bg=SURFACE2(),
                 highlightbackground=FG(),
             )
         else:
-            self._sleep_btn.config(
+            sleep_btn.config(
                 text=f"☾  {t('keep_awake')}",
                 fg=FG3(), bg=BG(),
                 highlightbackground=BORDER(),
@@ -47,20 +50,27 @@ class ActionsMixin:
 
 
     def _show_sleep_btn(self):
-        self._sleep_btn_outer.pack(fill="x", padx=self._s(24), pady=(self._s(6), 0),
+        sleep_btn_outer = getattr(self, "_sleep_btn_outer", None)
+        if sleep_btn_outer is None or not sleep_btn_outer.winfo_exists():
+            return
+        sleep_btn_outer.pack(fill="x", padx=self._s(24), pady=(self._s(6), 0),
                                    after=self._toggle_btn.master)
 
 
     def _hide_sleep_btn(self):
-        self._sleep_btn_outer.pack_forget()
+        sleep_btn_outer = getattr(self, "_sleep_btn_outer", None)
+        if sleep_btn_outer is not None and sleep_btn_outer.winfo_exists():
+            sleep_btn_outer.pack_forget()
         if self._sleep_inhibit_enabled:
             self._sleep_inhibit_enabled = False
             inhibit_sleep(False)
-            self._sleep_btn.config(
-                text=f"☾  {t('keep_awake')}",
-                fg=FG3(), bg=BG(),
-                highlightbackground=BORDER(),
-            )
+            sleep_btn = getattr(self, "_sleep_btn", None)
+            if sleep_btn is not None and sleep_btn.winfo_exists():
+                sleep_btn.config(
+                    text=f"☾  {t('keep_awake')}",
+                    fg=FG3(), bg=BG(),
+                    highlightbackground=BORDER(),
+                )
 
     # Folder actions
 
@@ -90,6 +100,20 @@ class ActionsMixin:
             if state._ws_manager:
                 state._ws_manager.notify_file_change("/")
             self._log(f"ROOT   changed -> {state.ROOT_DIR}", "info")
+
+    def _save_local_password(self):
+        try:
+            days = int(self._password_reminder_days_var.get())
+            state.save_password_reminder_days(days)
+        except (ValueError, tk.TclError):
+            messagebox.showerror(t("invalid_duration_title"), t("invalid_duration_message"))
+            return
+        state.save_local_password(self._password_var.get())
+        self._password_var.set(state.LOCAL_PASSWORD)
+        messagebox.showinfo(
+            t("password_saved_title"),
+            t("password_saved_message", days=state.PASSWORD_REMINDER_DAYS),
+        )
 
     # Server lifecycle
 

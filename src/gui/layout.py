@@ -58,12 +58,8 @@ class LayoutMixin:
 
         self._build_header()
         self._section_label(t("directory")); self._build_folder_section()
-        self._section_label(t("config"));    self._build_config_section()
         self._build_server_button()
-        self._build_sleep_button()
         self._build_addresses_section()
-        self._build_write_pairing_section()
-        self._build_public_section()
         self._build_incoming_section()
         self._build_log_section()
         self._build_footer()
@@ -137,13 +133,49 @@ class LayoutMixin:
         log_outer = tk.Frame(self._body, bg=SURFACE(),
                              highlightthickness=1, highlightbackground=BORDER())
         log_outer.pack(fill="x", padx=self._s(24), pady=(0, self._s(12)))
+
+        actions = tk.Frame(log_outer, bg=SURFACE())
+        actions.pack(fill="x", padx=self._s(8), pady=(self._s(7), 0))
+        tk.Button(
+            actions,
+            text=t("export_logs"),
+            font=(FONT_MONO, self._fs(7), "bold"),
+            fg=FG(), bg=SURFACE2(),
+            activeforeground=BG(), activebackground=FG(),
+            relief="flat", bd=0, cursor="hand2",
+            padx=self._s(10), pady=self._s(5),
+            command=self._export_logs,
+        ).pack(side="right")
+
+        log_content = tk.Frame(log_outer, bg=SURFACE())
+        log_content.pack(fill="both", expand=True)
         self._log_text = tk.Text(
-            log_outer, height=9, bg=SURFACE(), fg=FG2(),
+            log_content, height=9, bg=SURFACE(), fg=FG2(),
             font=(FONT_MONO, self._fs(9)), relief="flat", bd=0,
             padx=self._s(12), pady=self._s(10),
             state="disabled", insertbackground=FG(), wrap="word", cursor="arrow",
         )
-        self._log_text.pack(fill="x")
+        log_scrollbar = tk.Scrollbar(
+            log_content, orient="vertical", command=self._log_text.yview,
+            bg=BG(), troughcolor=SURFACE(), activebackground=FG3(),
+        )
+        self._log_text.configure(yscrollcommand=log_scrollbar.set)
+        log_scrollbar.pack(side="right", fill="y")
+        self._log_text.pack(side="left", fill="both", expand=True)
+
+        def _scroll_log(event):
+            if event.num == 4:
+                units = -1
+            elif event.num == 5:
+                units = 1
+            else:
+                units = int(-1 * (event.delta / 120)) if PLATFORM == "windows" else int(-1 * event.delta)
+            self._log_text.yview_scroll(units, "units")
+            return "break"
+
+        self._log_text.bind("<MouseWheel>", _scroll_log)
+        self._log_text.bind("<Button-4>", _scroll_log)
+        self._log_text.bind("<Button-5>", _scroll_log)
         self._log_text.tag_configure("info",  foreground=FG2())
         self._log_text.tag_configure("ok",    foreground=FG())
         self._log_text.tag_configure("error", foreground=DANGER())
