@@ -1,6 +1,23 @@
 """
 Google Drive provider.
 
+Requires `requests` (see src.deps.HAS_REQUESTS) -- accepted as a deliberate
+extra dependency for this feature per the original spec ("1-2 dépendances
+légères, pas bloquant"), since implementing chunked-multipart HTTP directly
+against Drive's REST API in stdlib-only would add real complexity for no
+practical benefit.
+
+IMPORTANT -- this cannot be a truly zero-config "click connect and go"
+provider: Google requires every application to register its own OAuth
+Client ID in Google Cloud Console (APIs & Services > Credentials > OAuth
+Client ID > type "Desktop app"). NetShare Server cannot ship a universal
+client ID on the host's behalf without that ID being tied to an Anthropic-
+or Melo-Technology-owned Google Cloud project, so the host must supply
+their own client_id (and, if Google issues one for the "Desktop app" type,
+a client_secret -- current Desktop-app credentials from Google typically
+don't require one when combined with PKCE). This gets entered once in the
+Cloud settings panel (Part 4).
+
 Scope requested is drive.readonly -- NetShare never needs write access to
 the host's Drive.
 """

@@ -488,13 +488,21 @@ class _IndexEventHandler(_WatchdogBase):
         rel  = self._rel(event.src_path)
         if event.is_directory:
             state._emit(f"WATCH  dir  added   {rel}", "dim")
-            self._broadcast({"type": "dir_added", "path": rel})
+            self._broadcast({
+                "type": "dir_added",
+                "path": rel,
+                "folder_name": path.name,
+            })
         else:
             if path.name.startswith("."):
                 return
             _file_index.add_file(path, self._root)
             state._emit(f"WATCH  file added   {rel}", "dim")
-            self._broadcast({"type": "file_added", "path": rel})
+            self._broadcast({
+                "type": "file_added",
+                "path": rel,
+                "file_name": path.name,
+            })
 
     def on_deleted(self, event):
         rel = self._rel(event.src_path)

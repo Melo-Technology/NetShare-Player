@@ -4,6 +4,7 @@ UI translation strings and language helpers for NetShare Server.
 English is the source language and the fallback for incomplete translations.
 """
 
+from src.i18n_generated import GENERATED_TRANSLATIONS
 LANGUAGES = {
     "en": "English",
     "fr": "Francais",
@@ -15,6 +16,23 @@ LANGUAGES = {
     "de": "Deutsch",
     "pt": "Portugues",
     "ko": "한국어",
+    "tr": "Türkçe",
+    "hi": "हिन्दी",
+    "nl": "Nederlands",
+    "it": "Italiano",
+    "tl": "Filipino",
+    "hu": "Magyar",
+    "sw": "Kiswahili",
+    "id": "Bahasa Indonesia",
+    "vi": "Tiếng Việt",
+    "th": "ไทย",
+    "pl": "Polski",
+    "uk": "Українська",
+    "fa": "فارسی",
+    "ur": "اردو",
+    "ms": "Bahasa Melayu",
+    "ro": "Română",
+    "el": "Ελληνικά",
 }
 
 DEFAULT_LANGUAGE = "en"
@@ -288,7 +306,7 @@ _TRANSLATIONS = {
         "start_server": "DEMARRER",
         "save": "SAUVEGARDER",
         "password_saved_title": "Mot de passe sauvegarde",
-        "password_saved_message": "Le mot de passe local est sauvegarde. Le rappel aura lieu tous les {days} jours.",
+        "password_saved_message": "Le mot de passe local a été enregistré et restera disponible après la fermeture du serveur.",
         "password_reminder_every": "RAPPEL DU MOT DE PASSE TOUS LES",
         "days": "JOURS",
         "invalid_duration_title": "Duree invalide",
@@ -857,14 +875,21 @@ _TRANSLATION_SUPPLEMENTS = {
     },
 }
 
+for _lang, _values in GENERATED_TRANSLATIONS.items():
+    _TRANSLATIONS.setdefault(_lang, {}).update(_values)
+
 for _lang, _values in _TRANSLATION_SUPPLEMENTS.items():
     _TRANSLATIONS.setdefault(_lang, {}).update(_values)
 
-# Fill missing runtime keys from English so partial translations stay usable.
-for _lang, _values in _TRANSLATIONS.items():
-    if _lang != DEFAULT_LANGUAGE:
-        for _key, _text in _TRANSLATIONS[DEFAULT_LANGUAGE].items():
-            _values.setdefault(_key, _text)
+# Never hide incomplete catalogs behind an English fallback.
+_english_keys = set(_TRANSLATIONS[DEFAULT_LANGUAGE])
+_missing_by_language = {
+    _lang: sorted(_english_keys - set(_values))
+    for _lang, _values in _TRANSLATIONS.items()
+    if _lang != DEFAULT_LANGUAGE and _english_keys - set(_values)
+}
+if _missing_by_language:
+    raise RuntimeError(f"Incomplete translation catalogs: {_missing_by_language}")
 
 
 def current_language() -> str:

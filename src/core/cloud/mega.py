@@ -1,6 +1,25 @@
 """
 Mega provider -- wraps the `megatools` CLI (https://megotools.megous.com).
 
+Validated approach (per discussion): megatools-if-available, otherwise this
+provider reports itself unavailable with a clear, actionable message rather
+than either crashing or silently no-op'ing. No third-party Mega Python
+library is used -- those wrap Mega's undocumented protocol directly and
+tend to break on API changes; megatools is the actively maintained, widely
+packaged option and degrades cleanly to "feature disabled" when absent.
+
+IMPORTANT LIMITATION, flagged rather than hidden: Mega has no public REST
+API for byte-range downloads, and megatools does not expose partial-range
+streaming over stdout -- `megatools get`/`megadl` always fetch the whole
+file to disk. This is the one provider that cannot satisfy the "stream in
+a bridge, no local copy" requirement from the spec. The pragmatic
+compromise implemented here: download once into a bounded local cache
+(state._CONFIG_DIR/"mega_cache"), then serve *that* cached file with full
+Range support like any local file -- so the first playback of a given file
+has to buffer completely before it can seek, but every request after that
+(including seeking within the same playback) is instant. The cache is
+capped by total size with LRU-ish eviction (oldest mtime first).
+
 No OAuth: Mega authenticates via account email/password passed to each CLI
 invocation. These are stored via TokenStore like any other provider's
 tokens, so they get the same encryption-if-available treatment.
@@ -52,7 +71,15 @@ def connect(email: str, password: str, label: str = "") -> dict:
     return {"email": email, "password": password, "label": label or email}
 
 
-
+# `megatools ls -l` output parsing.
+#
+# NOTE for Dani: I don't have megatools installed in this sandbox to verify
+# the exact column format against a live account, so this parser is written
+# defensively -- it falls back to name-only entries (no size/date) rather
+# than raising if a line doesn't match the expected shape. Please sanity
+# check `megatools ls -l /Root` against a real folder before relying on
+# sizes/dates in the GUI; the plain `ls` path-listing this falls back to is
+# the documented, stable part of the CLI.
 _LS_L_PATTERN = re.compile(
     r"^(?P<perms>[dfl-])\S*\s+(?P<size>\d+|\s*-\s*)\s+"
     r"(?P<date>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(?P<path>/.+)$"

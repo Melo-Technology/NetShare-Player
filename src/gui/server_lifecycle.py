@@ -307,7 +307,9 @@ class ServerLifecycleMixin:
                 "info",
             )
             if state._ws_manager and ws_port and current_ips:
-                state._ws_manager.notify_address_changed(current_ips[0], port, ws_port)
+                state._ws_manager.notify_address_changed(
+                    current_ips[0], port, ws_port, old_ips
+                )
 
         self._schedule_network_monitor()
 
@@ -406,7 +408,13 @@ class ServerLifecycleMixin:
         ))
         self.after(0, self._refresh_settings_tunnel_section_if_open)
 
-    # Cloudflare custom-domain tunnel lifecycle
+    # Cloudflare custom-domain tunnel lifecycle (Feature 3)
+    #
+    # Kept separate from _start_tunnel/_stop_tunnel above (SSH tunnel) rather
+    # than unified, since they're genuinely different setup flows -- but the
+    # callback contract (on_url/on_error/on_stop/on_reconnecting) matches on
+    # purpose, per the original spec's requirement to stay consistent with
+    # ServerLifecycleMixin's existing pattern.
 
     def _start_cloudflare_tunnel(self, hostname: str):
         if not self._running:

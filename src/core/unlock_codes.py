@@ -327,13 +327,32 @@ def list_codes(folder_path: str | None = None) -> list[dict]:
 
 
 def revoke_code(code_id: int) -> bool:
+    device_id = None
+    folder_path = None
     with _LOCK:
         conn = _get_conn()
+        row = conn.execute(
+            "SELECT folder_path, device_id, revoked FROM access_codes WHERE id = ?",
+            (code_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        folder_path, device_id, revoked = row
+        if revoked:
+            return False
         cur = conn.execute(
-            "UPDATE access_codes SET revoked = 1 WHERE id = ?", (code_id,)
+            "UPDATE access_codes SET revoked = 1 WHERE id = ? AND revoked = 0",
+            (code_id,),
         )
         conn.commit()
-        return cur.rowcount > 0
+        changed = cur.rowcount > 0
+    if changed and device_id and state._ws_manager:
+        state._ws_manager.send_to_devices_threadsafe([device_id], {
+            "type": "premium_revoked",
+            "folder_path": folder_path,
+            "folder_name": str(folder_path).rstrip("/").rsplit("/", 1)[-1],
+        })
+    return changed
 
 
 def redeem_code(code: str, device_id: str) -> dict:
@@ -351,6 +370,7 @@ def redeem_code(code: str, device_id: str) -> dict:
 
     code_hash = _hash_code(clean_code)
     now = time.time()
+    first_redemption = False
     with _LOCK:
         conn = _get_conn()
         row = conn.execute(
@@ -374,6 +394,13 @@ def redeem_code(code: str, device_id: str) -> dict:
             (clean_device, now, code_id),
         )
         conn.commit()
+        first_redemption = True
+    if first_redemption and state._ws_manager:
+        state._ws_manager.send_to_devices_threadsafe([clean_device], {
+            "type": "premium_redeemed",
+            "folder_path": folder_path,
+            "folder_name": str(folder_path).rstrip("/").rsplit("/", 1)[-1],
+        })
     return {"status": "ok", "folder_path": folder_path}
 
 

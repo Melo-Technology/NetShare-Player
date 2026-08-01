@@ -33,6 +33,23 @@ class LanguageModalMixin:
         list_frame.bind("<Configure>", _on_configure)
         canvas.bind("<Configure>", _on_configure)
 
+        def _on_mousewheel(event):
+            if getattr(event, "num", None) == 4:
+                units = -1
+            elif getattr(event, "num", None) == 5:
+                units = 1
+            else:
+                units = -1 if getattr(event, "delta", 0) > 0 else 1
+            canvas.yview_scroll(units, "units")
+            return "break"
+
+        def _bind_mousewheel(widget):
+            widget.bind("<MouseWheel>", _on_mousewheel)
+            widget.bind("<Button-4>", _on_mousewheel)
+            widget.bind("<Button-5>", _on_mousewheel)
+
+        _bind_mousewheel(canvas)
+        _bind_mousewheel(list_frame)
         current = self._language_var.get()
         for code, label in LANGUAGES.items():
             is_current = code == current
@@ -47,6 +64,7 @@ class LanguageModalMixin:
                 command=lambda c=code: self._select_language_from_modal(c, close_fn),
             )
             row.pack(fill="x", pady=(0, self._s(2)))
+            _bind_mousewheel(row)
             self._add_hover(row, SURFACE2() if is_current else SURFACE(), SURFACE2(),
                              text_normal=FG() if is_current else FG2(), text_hover=FG())
 

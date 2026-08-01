@@ -23,8 +23,10 @@ API routes used by the Flutter mobile client:
 """
 
 import json
+import hashlib
 import mimetypes
 import os
+import re
 import socket
 import subprocess
 import time
@@ -56,6 +58,12 @@ if HAS_PIL:
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 MAX_TEXT_EDIT_BYTES = 2 * 1024 * 1024
 
+_CLIENT_DISCONNECT_ERRORS = (
+    BrokenPipeError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+)
+
 _TEXT_EDIT_EXTS = {
     ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".xml", ".html",
     ".htm", ".css", ".js", ".py", ".log", ".ini", ".conf", ".yaml", ".yml",
@@ -73,15 +81,48 @@ _ALLOWED_BROWSER_ORIGINS = (
 
 # Tunnel detection
 
+_CF_RAY_RE = re.compile(r"^[0-9a-fA-F]{16,32}-[A-Z]{3}$")
+
+
+def _is_trusted_external_proxy(handler) -> bool:
+    """Return whether the TCP peer belongs to an explicitly trusted proxy."""
+    try:
+        peer = ipaddress.ip_address(handler.client_address[0])
+    except ValueError:
+        return False
+    for value in state.EXTERNAL_TUNNEL_TRUSTED_PROXIES:
+        try:
+            if peer in ipaddress.ip_network(value, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _is_external_tunnel_request(handler) -> bool:
+    """Recognise an explicitly configured, locally proxied Cloudflare request."""
+    header_name = state.EXTERNAL_TUNNEL_TRUSTED_HEADER.strip()
+    if header_name.lower() != "cf-ray":
+        return False
+    ray_id = handler.headers.get(header_name, "").strip()
+    if not _CF_RAY_RE.fullmatch(ray_id):
+        return False
+    
+    return _is_trusted_external_proxy(handler)
+
+
 def _is_tunnel_request(handler) -> bool:
     """
-    Return True when the request is forwarded through the public SSH tunnel.
+    Return True when the request is forwarded through a public tunnel.
 
-    localhost.run connects back to 127.0.0.1, so the only reliable signal is
-    the X-Tunnel: 1 header that the Flutter app sets when using the public URL.
-    We only honour this header when TUNNEL_ACTIVE is True, preventing spoofing.
+    The dedicated public listener is authoritative for built-in tunnels.
+    OS-managed cloudflared tunnels are recognised only through the explicit,
+    proxy-address-bound opt-in above.
     """
-    return bool(getattr(handler.server, "is_public_listener", False))
+    return bool(
+        getattr(handler.server, "is_public_listener", False)
+        or _is_external_tunnel_request(handler)
+    )
 
 
 def _is_lan_request(handler) -> bool:
@@ -114,22 +155,24 @@ class NetShareHandler(BaseHTTPRequestHandler):
 
     # Response helpers
 
-    def send_json(self, data, status=200):
+    def send_json(self, data, status=200, headers=None):
         try:
             body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type",   "application/json; charset=utf-8")
             self.send_header("Content-Length", len(body))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self._send_cors_headers()
             self.end_headers()
             self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
+        except _CLIENT_DISCONNECT_ERRORS:
             pass
 
     def send_error_json(self, msg: str, status: int = 400):
         try:
             self.send_json({"error": msg}, status)
-        except (BrokenPipeError, ConnectionResetError):
+        except _CLIENT_DISCONNECT_ERRORS:
             pass
 
     def _read_body(self, max_bytes: int, allow_empty: bool = False) -> bytes | None:
@@ -175,6 +218,17 @@ class NetShareHandler(BaseHTTPRequestHandler):
     def _reject_spoofed_tunnel_header(self) -> bool:
         if not _is_tunnel_request(self) and self.headers.get("X-Tunnel") is not None:
             self.send_error_json("X-Tunnel is not accepted on the LAN listener", 400)
+            return True
+        external_header = state.EXTERNAL_TUNNEL_TRUSTED_HEADER.strip()
+        if (
+            external_header
+            and self.headers.get(external_header) is not None
+            and not _is_tunnel_request(self)
+        ):
+            self.send_error_json(
+                f"{external_header} is not accepted from an untrusted proxy",
+                400,
+            )
             return True
         return False
 
@@ -306,7 +360,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self._send_cors_headers()
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "X-Password, X-Device-ID, X-Tunnel, X-File-Path-B64, X-Filename, X-Upload-Token, Content-Type, Range")
+        self.send_header("Access-Control-Allow-Headers", "X-Password, X-Device-ID, X-Tunnel, X-File-Path-B64, X-Filename, X-Upload-Token, Content-Type, Range, If-Range, If-None-Match")
         self.end_headers()
 
     # GET router
@@ -647,6 +701,14 @@ class NetShareHandler(BaseHTTPRequestHandler):
                 "price_note": lock["price_note"],
             }, 403)
         try:
+            etag = self._directory_etag(target)
+            if self.headers.get("If-None-Match", "").strip() == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Content-Length", "0")
+                self._send_cors_headers()
+                self.end_headers()
+                return
             items = []
             for entry in sorted(
                 target.iterdir(),
@@ -684,7 +746,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
                             "modified": "",
                             "cloud_provider": provider_id,
                         })
-            self.send_json(items)
+            self.send_json(items, headers={"ETag": etag})
         except PermissionError:
             self.send_error_json("Permission denied", 403)
 
@@ -1034,7 +1096,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self.end_headers()
             for chunk in result.chunks:
                 self.wfile.write(chunk)
-        except (BrokenPipeError, ConnectionResetError):
+        except _CLIENT_DISCONNECT_ERRORS:
             pass  # client disconnected / seeked away mid-stream, not an error
 
     def _route_file(self, params):
@@ -1084,6 +1146,10 @@ class NetShareHandler(BaseHTTPRequestHandler):
             ):
                 mime = f"{mime}; charset=utf-8"
             range_hdr = self.headers.get("Range")
+            if range_hdr:
+                if_range = self.headers.get("If-Range", "").strip()
+                if if_range and if_range != self._file_etag(target):
+                    range_hdr = None
             if range_hdr:
                 self._serve_range(target, file_size, mime, range_hdr)
             else:
@@ -1198,13 +1264,15 @@ class NetShareHandler(BaseHTTPRequestHandler):
                         self._send_cors_headers()
                         self.end_headers()
                         self.wfile.write(data)
-                    except (BrokenPipeError, ConnectionResetError):
+                    except _CLIENT_DISCONNECT_ERRORS:
                         pass
                     return
             # All seeks failed
             self.send_error_json("Could not extract video frame", 500)
         except _sp.TimeoutExpired:
             self.send_error_json("ffmpeg timed out", 504)
+        except _CLIENT_DISCONNECT_ERRORS:
+            pass
         except Exception as e:
             self.send_error_json(f"Video thumbnail error: {e}", 500)
 
@@ -1217,6 +1285,8 @@ class NetShareHandler(BaseHTTPRequestHandler):
             try:
                 mime, _ = mimetypes.guess_type(str(target))
                 self._serve_full(target, file_size, mime or "application/octet-stream")
+            except _CLIENT_DISCONNECT_ERRORS:
+                pass
             except Exception as e:
                 self.send_error_json(f"Server error: {e}", 500)
             return
@@ -1242,6 +1312,8 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self._send_cors_headers()
             self.end_headers()
             self.wfile.write(data)
+        except _CLIENT_DISCONNECT_ERRORS:
+            pass
         except Exception as e:
             self.send_error_json(f"Thumbnail error: {e}", 500)
 
@@ -1268,7 +1340,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
                 self._send_cors_headers()
                 self.end_headers()
                 self.wfile.write(img_data)
-            except (BrokenPipeError, ConnectionResetError):
+            except _CLIENT_DISCONNECT_ERRORS:
                 pass
         else:
             self.send_response(404)
@@ -1566,6 +1638,28 @@ class NetShareHandler(BaseHTTPRequestHandler):
 
     _CHUNK = 8 * 1024 * 1024   # 8 MB write buffer
 
+    @staticmethod
+    def _file_etag(path: Path) -> str:
+        stat = path.stat()
+        value = f"{path.resolve()}\0{stat.st_size}\0{stat.st_mtime_ns}"
+        return f'"{hashlib.sha256(value.encode("utf-8")).hexdigest()}"'
+
+    @staticmethod
+    def _directory_etag(path: Path) -> str:
+        """Shallow O(N) validator without reading any file contents."""
+        count = 0
+        highest_mtime_ns = 0
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    stat = entry.stat(follow_symlinks=False)
+                except (PermissionError, FileNotFoundError, OSError):
+                    continue
+                count += 1
+                highest_mtime_ns = max(highest_mtime_ns, stat.st_mtime_ns)
+        value = f"{path.resolve()}\0{count}\0{highest_mtime_ns}"
+        return f'"{hashlib.sha256(value.encode("utf-8")).hexdigest()}"'
+
     def _serve_full(self, path: Path, size: int, mime: str):
         if mime.startswith("video/"):
             state._emit(
@@ -1577,6 +1671,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type",   mime)
         self.send_header("Content-Length", size)
         self.send_header("Accept-Ranges",  "bytes")
+        self.send_header("ETag", self._file_etag(path))
         self._send_cors_headers()
         # UTF-8 safe Content-Disposition
         try:
@@ -1594,7 +1689,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
             while chunk := f.read(self._CHUNK):
                 try:
                     self.wfile.write(chunk)
-                except BrokenPipeError:
+                except _CLIENT_DISCONNECT_ERRORS:
                     break
 
     def _serve_range(self, path: Path, size: int, mime: str, range_header: str):
@@ -1635,6 +1730,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", length)
             self.send_header("Content-Range",  f"bytes {start}-{end}/{size}")
             self.send_header("Accept-Ranges",  "bytes")
+            self.send_header("ETag", self._file_etag(path))
             self._send_cors_headers()
             try:
                 self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -1651,7 +1747,7 @@ class NetShareHandler(BaseHTTPRequestHandler):
                         break
                     try:
                         self.wfile.write(chunk)
-                    except BrokenPipeError:
+                    except _CLIENT_DISCONNECT_ERRORS:
                         break
                     remaining -= len(chunk)
         except (ValueError, IndexError) as exc:
@@ -1664,8 +1760,9 @@ class NetShareHandler(BaseHTTPRequestHandler):
             self.send_response(416)
             self.send_header("Content-Range", f"bytes */{size}")
             self.send_header("Accept-Ranges", "bytes")
+            self.send_header("ETag", self._file_etag(path))
             self.send_header("Content-Length", "0")
             self._send_cors_headers()
             self.end_headers()
-        except (BrokenPipeError, ConnectionResetError):
+        except _CLIENT_DISCONNECT_ERRORS:
             pass

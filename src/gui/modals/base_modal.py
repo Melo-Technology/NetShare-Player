@@ -1,6 +1,29 @@
 """
 Shared modal machinery: a backdrop + a centered modal window, reused
 by every Settings-style popup (Languages, Settings).
+
+FIX (reported bug: clicking anything inside the modal closed it instead of
+activating it): the original version used two separate Toplevel windows --
+a dim overlay and the modal on top of it -- and relied on window-manager
+stacking order to keep the modal above the overlay. That stacking is not
+reliably guaranteed across window managers; on at least one reported setup
+the overlay ended up receiving clicks meant for the modal, since overlay
+and modal are two independent top-level surfaces from the WM's point of
+view. Two separate Toplevels also fought over -topmost/lift() in a way
+that made the ordering non-deterministic after the first open.
+
+Fix: a single Toplevel for the backdrop, with the modal built as a
+plain Frame *inside* that same Toplevel, positioned with place(). Because
+both live in one Tk widget tree, Tk's own (reliable) widget stacking
+decides what's on top at a given pixel -- no window-manager involvement,
+no ambiguity. The click-catcher (closes on click) is a Frame sibling
+placed first (bottom); the modal Frame is placed after it and explicitly
+raised, so any click physically over the modal hits the modal's widgets,
+never the catcher underneath.
+
+Both live under `self` (the main App/Tk window), so ThemeMixin._repaint_all()
+still reaches them for free on a theme toggle, as long as modal content
+sticks to the same BG()/FG()/SURFACE()/... accessors as the rest of the app.
 """
 
 import tkinter as tk
@@ -34,16 +57,20 @@ class ModalMixin:
         overlay = tk.Toplevel(self)
         overlay.overrideredirect(True)
         overlay.configure(bg=BG())
-        
+        # Tk applies Toplevel alpha to every child widget too. Keeping the
+        # backdrop opaque avoids making the modal content itself transparent.
         overlay.geometry(f"{root_w}x{root_h}+{root_x}+{root_y}")
         overlay.bind("<Escape>", lambda e: self._close_modal())
         self._modal_overlay = overlay
 
+        # Click-catcher: covers the whole overlay, sits BEHIND the modal frame
+        # (placed/raised first). A click anywhere the modal isn't closes it.
         catcher = tk.Frame(overlay, bg=BG())
         catcher.place(x=0, y=0, relwidth=1, relheight=1)
         catcher.bind("<Button-1>", lambda e: self._close_modal())
 
-        
+        # Modal frame -- a child of the SAME window as the catcher, so Tk's
+        # own widget stacking (not the WM's) decides who gets the click.
         margin_x = min(self._s(16), max(0, (root_w - 1) // 2))
         margin_y = min(self._s(16), max(0, (root_h - 1) // 2))
         available_w = max(1, root_w - (margin_x * 2))
@@ -54,7 +81,9 @@ class ModalMixin:
         y = max(margin_y, (root_h - h) // 2)
         modal = tk.Frame(overlay, bg=SURFACE(), highlightthickness=1, highlightbackground=BORDER())
         modal.place(x=x, y=y, width=w, height=h)
-        modal.lift()  
+        modal.lift()  # belt-and-suspenders: later-placed siblings are already on top by default
+        # A click that lands on the modal frame itself (not one of its
+        # children/buttons) must not fall through to the catcher's binding.
         modal.bind("<Button-1>", lambda e: "break")
         self._modal_window = modal
 
@@ -79,10 +108,12 @@ class ModalMixin:
         overlay.update_idletasks()
         build_content(content, self._close_modal)
 
-        overlay.focus_set()  
+        overlay.focus_set()  # so <Escape> (bound on the overlay) actually fires
         return modal
 
     def _close_modal(self):
+        # Destroying the overlay Toplevel destroys the modal Frame with it
+        # (it's a child) -- nothing to separately destroy.
         if self._modal_overlay is not None:
             try:
                 self._modal_overlay.destroy()

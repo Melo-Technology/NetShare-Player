@@ -152,11 +152,11 @@ class RemoteFlagsMixin:
         # Keep the legacy status hooks no-op when the header indicator is hidden
         self._set_firebase_label_ok()
 
-        self._log(
-            f"FLAGS  upload={'on' if upload_enabled else 'OFF (remotely disabled)'}  "
-            f"edit={'on' if edit_enabled else 'OFF (remotely disabled)'}",
-            "ok" if (upload_enabled and edit_enabled) else "dim",
-        )
+        # self._log(
+        #     f"FLAGS  upload={'on' if upload_enabled else 'OFF (remotely disabled)'}  "
+        #     f"edit={'on' if edit_enabled else 'OFF (remotely disabled)'}",
+        #     "ok" if (upload_enabled and edit_enabled) else "dim",
+        # )
 
 
     def _apply_remote_flags_to_ui(self):

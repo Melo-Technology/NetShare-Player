@@ -516,12 +516,21 @@ class SettingsSectionsMixin:
         self._stop_cloudflare_tunnel()
         self._settings_refresh_active_section()
 
+    # Sharing -- reuses PublicPanelMixin._build_public_config_controls(parent)
+    # as-is: it's already parameterized and owns the real state sync logic
+    # (community/admin keys, browse/download/upload permissions, receive
+    # mode, upload limits/types). Rebuilding that here would create a second
+    # source of truth for the exact same widgets.
 
     def _settings_section_sharing(self, parent):
         tk.Label(parent, text=t("sharing"), font=(FONT_MONO, self._fs(9), "bold"),
                  fg=FG3(), bg=SURFACE()).pack(anchor="w", pady=(0, self._s(6)))
         self._build_public_config_controls(parent)
 
+    # Permissions -- port/name/local password + write permissions (same Tk
+    # vars as the main page's ConfigSectionMixin) + keep-awake + a
+    # simplified pairing block (see module docstring for why the OTP ring
+    # isn't reproduced here).
 
     def _settings_section_permissions(self, parent):
         tk.Label(parent, text=t("config"), font=(FONT_MONO, self._fs(9), "bold"),
@@ -575,10 +584,10 @@ class SettingsSectionsMixin:
             visible = not password_visible.get()
             password_visible.set(visible)
             password_entry.configure(show="" if visible else "*")
-            password_toggle.configure(text="HIDE" if visible else "SHOW")
+            password_toggle.configure(text=t("hide") if visible else t("show"))
 
         password_toggle = tk.Button(
-            pw_row, text="SHOW", font=(FONT_MONO, self._fs(7), "bold"),
+            pw_row, text=t("show"), font=(FONT_MONO, self._fs(7), "bold"),
             fg=FG3(), bg=SURFACE(), activeforeground=FG(), activebackground=SURFACE2(),
             relief="flat", bd=0, cursor="hand2", padx=self._s(8),
             command=_toggle_password_visibility,

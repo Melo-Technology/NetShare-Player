@@ -110,6 +110,8 @@ def _save_config():
         "local_password_saved_at": LOCAL_PASSWORD_SAVED_AT,
         "password_reminder_days": PASSWORD_REMINDER_DAYS,
         "folder_share_history": FOLDER_SHARE_HISTORY,
+        "external_tunnel_trusted_header": EXTERNAL_TUNNEL_TRUSTED_HEADER,
+        "external_tunnel_trusted_proxies": list(EXTERNAL_TUNNEL_TRUSTED_PROXIES),
     }, ensure_ascii=False, indent=2)
     try:
         _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -122,6 +124,23 @@ def _save_config():
 
 
 _CONFIG = _load_config()
+
+# External reverse-proxy tunnel detection is deliberately disabled by default.
+# Operators using an OS-managed cloudflared tunnel may opt in by setting
+# "external_tunnel_trusted_header" to "CF-Ray" in server_config.json. The
+# origin connection must also come from one of these explicitly trusted proxy
+# networks; keeping cloudflared's ingress service on loopback is recommended.
+EXTERNAL_TUNNEL_TRUSTED_HEADER: str = str(
+    _CONFIG.get("external_tunnel_trusted_header") or ""
+).strip()
+EXTERNAL_TUNNEL_TRUSTED_PROXIES: tuple[str, ...] = tuple(
+    str(value).strip()
+    for value in (
+        _CONFIG.get("external_tunnel_trusted_proxies")
+        or ("127.0.0.1/32", "::1/128")
+    )
+    if str(value).strip()
+)
 
 # Client write access
 

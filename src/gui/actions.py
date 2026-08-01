@@ -34,7 +34,7 @@ class ActionsMixin:
         inhibit_sleep(self._sleep_inhibit_enabled)
         sleep_btn = getattr(self, "_sleep_btn", None)
         if sleep_btn is None or not sleep_btn.winfo_exists():
-            return  
+            return  # main-page button removed; Settings > Permissions reflects state on its own render
         if self._sleep_inhibit_enabled:
             sleep_btn.config(
                 text=f"☀  {t('keep_awake_on')}",

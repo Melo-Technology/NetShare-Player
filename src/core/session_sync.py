@@ -83,6 +83,24 @@ def _find_member(group: dict, device_id: str) -> dict | None:
     )
 
 
+def _notify_group(
+    group_id: str,
+    group_name: str,
+    recipients,
+    action: str,
+    member: dict,
+):
+    if state._ws_manager:
+        state._ws_manager.send_to_devices_threadsafe(recipients, {
+            "type": "group_updated",
+            "session_group_id": group_id,
+            "group_name": group_name,
+            "action": action,
+            "device_id": member["device_id"],
+            "device_name": member["label"],
+        })
+
+
 def create_group(device_id: str, name: str, device_label: str = "") -> dict:
     if not state.is_trusted_device(device_id):
         return {"status": "untrusted_device"}
@@ -115,6 +133,7 @@ def join_group(device_id: str, invite_code: str, device_label: str = "") -> dict
         return {"status": "untrusted_device"}
     now = time.time()
     invite_hash = _hash(str(invite_code or "").strip())
+    notification = None
     with _LOCK:
         for group_id, group in _DATA["groups"].items():
             if group.get("invite_expires_at", 0) <= now:
@@ -129,20 +148,33 @@ def join_group(device_id: str, invite_code: str, device_label: str = "") -> dict
             if existing is None and len(members) >= MAX_DEVICES:
                 return {"status": "group_full"}
             if existing is None:
-                members.append({
+                joined_member = {
                     "device_id": device_id,
                     "label": _device_label(device_id, device_label),
                     "joined_at": now,
-                })
+                }
+                members.append(joined_member)
                 _save()
+                notification = (
+                    group_id,
+                    group.get("name", t("my_devices")),
+                    [member["device_id"] for member in members],
+                    "member_joined",
+                    joined_member,
+                )
             elif device_label and existing["label"] != _device_label(device_id, device_label):
                 existing["label"] = _device_label(device_id, device_label)
                 _save()
-            return {
+            result = {
                 "status": "ok", "session_group_id": group_id,
-                "group_name": group.get("name", "Mes appareils"),
+                "group_name": group.get("name", t("my_devices")),
             }
-    return {"status": "invalid_or_expired_invite"}
+            break
+        else:
+            return {"status": "invalid_or_expired_invite"}
+    if notification:
+        _notify_group(*notification)
+    return result
 
 
 def _authorized(group_id: str, device_id: str) -> dict | None:
@@ -198,12 +230,17 @@ def list_members(group_id: str, device_id: str) -> dict:
 
 
 def leave_group(group_id: str, device_id: str) -> dict:
+    notification = None
     with _LOCK:
         group = _authorized(group_id, device_id)
         if group is None:
             return {"status": "forbidden"}
+        members = _normalize_members(group)
+        leaving_member = _find_member(group, device_id)
+        recipients = [member["device_id"] for member in members]
+        group_name = group.get("name", t("my_devices"))
         group["members"] = [
-            member for member in _normalize_members(group)
+            member for member in members
             if member["device_id"] != device_id
         ]
         deleted = not group["members"]
@@ -212,26 +249,43 @@ def leave_group(group_id: str, device_id: str) -> dict:
         elif (group.get("state") or {}).get("source_device_id") == device_id:
             group["state"] = None
         _save()
-        return {"status": "ok", "group_deleted": deleted}
+        if leaving_member:
+            notification = (
+                group_id, group_name, recipients, "member_left", leaving_member
+            )
+    if notification:
+        _notify_group(*notification)
+    return {"status": "ok", "group_deleted": deleted}
 
 
 def remove_member(group_id: str, requester_id: str, target_device_id: str) -> dict:
     if requester_id == target_device_id:
         return {"status": "use_leave"}
+    notification = None
     with _LOCK:
         group = _authorized(group_id, requester_id)
         if group is None:
             return {"status": "forbidden"}
         members = _normalize_members(group)
-        if not any(member["device_id"] == target_device_id for member in members):
+        removed_member = next(
+            (member for member in members if member["device_id"] == target_device_id),
+            None,
+        )
+        if removed_member is None:
             return {"status": "not_found"}
+        recipients = [member["device_id"] for member in members]
+        group_name = group.get("name", t("my_devices"))
         group["members"] = [
             member for member in members if member["device_id"] != target_device_id
         ]
         if (group.get("state") or {}).get("source_device_id") == target_device_id:
             group["state"] = None
         _save()
-        return {"status": "ok"}
+        notification = (
+            group_id, group_name, recipients, "member_removed", removed_member
+        )
+    _notify_group(*notification)
+    return {"status": "ok"}
 
 
 def renew_invite(group_id: str, device_id: str) -> dict:
@@ -257,4 +311,3 @@ def reset_for_tests(path: Path | None = None):
         if path is not None:
             STORE_PATH = path
         _DATA = {"groups": {}}
-

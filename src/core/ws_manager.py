@@ -23,7 +23,8 @@ if HAS_WEBSOCKETS:
 class WebSocketManager:
 
     def __init__(self):
-        self._clients: set        = set()
+        # A socket is targetable only after its pairing bearer was verified.
+        self._clients: dict       = {}
         self._loop                = None
         self._lock                = threading.Lock()
         self._stop_event: asyncio.Event | None = None
@@ -32,14 +33,14 @@ class WebSocketManager:
         self._loop       = loop
         self._stop_event = asyncio.Event()
 
-    def add_client(self, ws):
+    def add_client(self, ws, device_id: str | None = None):
         with self._lock:
-            self._clients.add(ws)
+            self._clients[ws] = device_id
         state._emit(f"WS  +  client connected  ({len(self._clients)} total)")
 
     def remove_client(self, ws):
         with self._lock:
-            self._clients.discard(ws)
+            self._clients.pop(ws, None)
         state._emit(f"WS  −  client disconnected  ({len(self._clients)} remaining)")
 
     def client_count(self) -> int:
@@ -61,27 +62,76 @@ class WebSocketManager:
                 dead.add(ws)
         if dead:
             with self._lock:
-                self._clients -= dead
+                for ws in dead:
+                    self._clients.pop(ws, None)
 
     def broadcast_threadsafe(self, message: str):
         if self._loop and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(self._broadcast(message), self._loop)
 
+    async def _send_to_devices(self, device_ids: set[str], message: str):
+        with self._lock:
+            targets = {
+                ws for ws, device_id in self._clients.items()
+                if device_id in device_ids
+            }
+        dead = set()
+        for ws in targets:
+            try:
+                await ws.send(message)
+            except Exception:
+                dead.add(ws)
+        if dead:
+            with self._lock:
+                for ws in dead:
+                    self._clients.pop(ws, None)
+
+    def send_to_devices_threadsafe(self, device_ids, payload: dict):
+        """Send only to sockets bound to a verified paired device."""
+        clean_ids = {
+            str(device_id).strip() for device_id in device_ids
+            if str(device_id).strip()
+        }
+        if clean_ids and self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self._send_to_devices(
+                    clean_ids, json.dumps(payload, ensure_ascii=False)
+                ),
+                self._loop,
+            )
+
     def notify_file_change(self, path: str):
         self.broadcast_threadsafe(json.dumps({"type": "file_change", "path": path}))
 
-    def notify_address_changed(self, host: str, http_port: int, ws_port: int):
+    def notify_address_changed(
+        self,
+        host: str,
+        http_port: int,
+        ws_port: int,
+        old_ips=(),
+    ):
         """Tell connected clients where to reconnect, then disconnect them."""
         if self._loop and self._loop.is_running():
             return asyncio.run_coroutine_threadsafe(
-                self._address_changed_sequence(host, http_port, ws_port), self._loop
+                self._address_changed_sequence(
+                    host, http_port, ws_port, tuple(old_ips)
+                ),
+                self._loop,
             )
         return None
 
-    async def _address_changed_sequence(self, host: str, http_port: int, ws_port: int):
+    async def _address_changed_sequence(
+        self,
+        host: str,
+        http_port: int,
+        ws_port: int,
+        old_ips=(),
+    ):
         payload = json.dumps({
             "type": "server_address_changed",
+            "reason": "local_ip_changed",
             "message": "The server network address has changed.",
+            "old_ips": list(old_ips),
             "host": host,
             "http_port": http_port,
             "ws_port": ws_port,
@@ -123,10 +173,11 @@ async def _ws_handler(websocket):
     if manager is None:
         await websocket.close(1001, "Manager not initialized")
         return
-    if not _ws_authorized(websocket):
+    authorized, device_id = _ws_identity(websocket)
+    if not authorized:
         await websocket.close(1008, "Unauthorized")
         return
-    manager.add_client(websocket)
+    manager.add_client(websocket, device_id)
     await websocket.send(json.dumps({
         "type":    "welcome",
         "name":    state.SERVER_NAME,
@@ -147,21 +198,47 @@ async def _ws_handler(websocket):
         manager.remove_client(websocket)
 
 
-def _ws_authorized(websocket) -> bool:
-    if not state.LOCAL_PASSWORD:
-        return True
-    password = ""
+def _request_header(websocket, name: str) -> str:
     try:
-        password = websocket.request_headers.get("X-Password", "")
+        return str(websocket.request_headers.get(name, "") or "")
     except Exception:
         pass
-    if not password:
-        try:
-            password = websocket.request.headers.get("X-Password", "")
-        except Exception:
-            pass
-    password = unquote(password)
-    return hmac.compare_digest(password, state.LOCAL_PASSWORD)
+    try:
+        return str(websocket.request.headers.get(name, "") or "")
+    except Exception:
+        return ""
+
+
+def _ws_identity(websocket) -> tuple[bool, str | None]:
+    """Authorize a socket and return its verified device identity, if any.
+
+    Anonymous read-only sockets remain available before pairing. A stale or
+    invalid device credential is downgraded to anonymous and can never become
+    targetable; the local password remains mandatory when configured.
+    """
+    if state.LOCAL_PASSWORD:
+        password = unquote(_request_header(websocket, "X-Password"))
+        if not hmac.compare_digest(password, state.LOCAL_PASSWORD):
+            return False, None
+
+    device_id = _request_header(websocket, "X-Device-ID").strip()
+    authorization = _request_header(websocket, "Authorization").strip()
+    if not authorization:
+        # The Player always sends its local device ID, including before it has
+        # been paired. Keep that socket anonymous/read-only: the unverified ID
+        # is deliberately not stored in the targetable client registry.
+        return True, None
+    if not device_id or not authorization.lower().startswith("bearer "):
+        return True, None
+    credential = authorization[7:].strip()
+    if not state.verify_device_credential(device_id, credential):
+        return True, None
+    return True, device_id
+
+
+def _ws_authorized(websocket) -> bool:
+    """Backward-compatible boolean wrapper used by existing callers/tests."""
+    return _ws_identity(websocket)[0]
 
 
 # Server thread entry point
