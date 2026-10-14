@@ -1,0 +1,5 @@
+# All changes require approval from the repository owner.
+* @Danieljucke
+
+# Protect the ownership configuration itself.
+/.github/CODEOWNERS @Danieljucke
