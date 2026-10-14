@@ -1,5 +1,5 @@
-# All changes require approval from the repository owner.
-* @Danieljucke
+# All changes require approval from a repository code owner.
+* @Danieljucke @Melo-Technology/netshare-team
 
 # Protect the ownership configuration itself.
-/.github/CODEOWNERS @Danieljucke
+/.github/CODEOWNERS @Danieljucke @Melo-Technology/netshare-team
