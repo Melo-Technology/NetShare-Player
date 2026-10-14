@@ -1,0 +1,11 @@
+/* Reusable data-table primitives introduced when Devices first needs them. */
+.ns-table-wrap { width:100%; overflow:auto; }
+.ns-table { width:100%; border-collapse:collapse; font-size:var(--ns-font-size-xs); }
+.ns-table th { padding:0 var(--ns-space-3) var(--ns-space-3); border-bottom:var(--ns-border-width) solid var(--ns-border); color:var(--ns-text-subtle); font-size:var(--ns-font-size-2xs); font-weight:700; letter-spacing:var(--ns-letter-spacing-caps); text-align:left; white-space:nowrap; }
+.ns-table td { padding:var(--ns-space-3); border-bottom:var(--ns-border-width) solid var(--ns-border); vertical-align:middle; }
+.ns-table tbody tr:last-child td { border-bottom:0; }
+.ns-table__mono { color:var(--ns-text-muted); overflow-wrap:anywhere; }
+.ns-table__actions { text-align:right; white-space:nowrap; }
+.ns-code { font-size:clamp(var(--ns-text-20),4vw,var(--ns-text-30)); font-weight:700; letter-spacing:.16em; }
+.ns-secret { font-family:var(--ns-font-family); overflow-wrap:anywhere; }
+.ns-qr-image { display:block; width:min(260px,72vw); height:auto; margin:0 auto; image-rendering:auto; background:#fff; padding:var(--ns-space-3); border:var(--ns-border-width) solid var(--ns-border-strong); }

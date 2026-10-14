@@ -1,0 +1,63 @@
+/* Incremental Design System controls introduced when Overview first needs them. */
+.ns-button {
+  min-height: var(--ns-control-height);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ns-space-2);
+  padding: 0 var(--ns-space-4);
+  border: var(--ns-border-width) solid var(--ns-border-strong);
+  border-radius: var(--ns-radius-sm);
+  background: transparent;
+  color: var(--ns-text);
+  font: inherit;
+  font-size: var(--ns-font-size-xs);
+  font-weight: 700;
+  letter-spacing: .06em;
+  cursor: pointer;
+}
+.ns-button:hover { background: var(--ns-surface-raised); }
+.ns-button:disabled { cursor: not-allowed; opacity: .45; }
+.ns-button--primary { background: var(--ns-fill); color: var(--ns-fill-text); border-color: var(--ns-fill); }
+.ns-button--danger { color: var(--ns-danger); border-color: var(--ns-danger); }
+.ns-button--compact { min-height: 30px; padding-inline: var(--ns-space-3); font-size: var(--ns-font-size-2xs); }
+
+.ns-row-list { display: grid; }
+.ns-data-row {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--ns-space-3);
+  border-bottom: var(--ns-border-width) solid var(--ns-border);
+  padding: var(--ns-space-3) 0;
+}
+.ns-data-row:last-child { border-bottom: 0; }
+.ns-data-row__index { width: 22px; color: var(--ns-text-subtle); font-size: var(--ns-font-size-2xs); }
+.ns-data-row__title { color: var(--ns-text); font-size: var(--ns-font-size-sm); font-weight: 600; overflow-wrap: anywhere; }
+.ns-data-row__meta { margin-top: 2px; color: var(--ns-text-subtle); font-size: var(--ns-font-size-2xs); overflow-wrap: anywhere; }
+.ns-data-row__actions { display: flex; gap: var(--ns-space-2); }
+
+.ns-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ns-space-4); margin-bottom: var(--ns-space-5); }
+.ns-section-heading__eyebrow { color: var(--ns-text-subtle); font-size: var(--ns-font-size-2xs); letter-spacing: var(--ns-letter-spacing-caps); }
+.ns-section-heading__title { margin: var(--ns-space-1) 0 0; font-size:var(--ns-text-24); }
+.ns-section-heading__description { margin: var(--ns-space-2) 0 0; max-width: 62ch; color: var(--ns-text-muted); font-size: var(--ns-font-size-sm); }
+
+.ns-hero { border: var(--ns-border-width) solid var(--ns-border-strong); background: var(--ns-surface); padding: var(--ns-space-6); }
+.ns-hero__top { display: flex; justify-content: space-between; align-items: center; gap: var(--ns-space-4); }
+.ns-hero__label { margin-top: var(--ns-space-6); color: var(--ns-text-subtle); font-size: var(--ns-font-size-2xs); letter-spacing: var(--ns-letter-spacing-caps); }
+.ns-hero__value { margin-top: var(--ns-space-1); font-size: var(--ns-font-size-xl); font-weight: 700; overflow-wrap: anywhere; }
+.ns-hero__meta { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); margin-top: var(--ns-space-5); border-top: var(--ns-border-width) solid var(--ns-border); }
+.ns-hero__metric { padding: var(--ns-space-3) var(--ns-space-3) 0 0; }
+.ns-hero__metric + .ns-hero__metric { border-left: var(--ns-border-width) solid var(--ns-border); padding-left: var(--ns-space-3); }
+.ns-hero__metric-value { font-weight: 700; }
+.ns-hero__metric-label { margin-top: 2px; color: var(--ns-text-subtle); font-size: var(--ns-font-size-2xs); }
+
+.ns-address { display:flex; align-items:center; justify-content:space-between; gap:var(--ns-space-3); padding:var(--ns-space-3) 0; border-bottom:var(--ns-border-width) solid var(--ns-border); }
+.ns-address:last-child { border-bottom:0; }
+.ns-address__value { font-weight:600; overflow-wrap:anywhere; }
+.ns-address__meta { color:var(--ns-text-subtle); font-size:var(--ns-font-size-2xs); margin-top:2px; }
+
+.ns-inline-actions { display:flex; flex-wrap:wrap; gap:var(--ns-space-2); }
+.ns-muted { color:var(--ns-text-muted); }
+.ns-subtle { color:var(--ns-text-subtle); }

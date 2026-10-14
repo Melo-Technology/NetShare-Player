@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetShare Design System Specimen</title>
+  <link rel="stylesheet" href="./css/index.css">
+</head>
+<body>
+  <!-- Pure visual specimen only. This is not an application screen and contains no business data. -->
+  <ns-app-shell>
+    <ns-sidebar>
+      <div class="ns-sidebar__brand">NETSHARE</div>
+      <div class="ns-sidebar__group">
+        <div class="ns-sidebar__label">GROUP</div>
+        <button class="ns-sidebar__item" aria-current="page">ACTIVE ITEM</button>
+        <button class="ns-sidebar__item">INACTIVE ITEM</button>
+      </div>
+      <div class="ns-sidebar__spacer"></div>
+      <ns-status-badge tone="success">READY</ns-status-badge>
+    </ns-sidebar>
+
+    <div class="ns-app-shell__main">
+      <ns-header>
+        <h1 class="ns-header__title">COMPONENT SPECIMEN</h1>
+        <div class="ns-header__actions">
+          <button class="ns-button" id="theme-toggle">THEME</button>
+        </div>
+      </ns-header>
+
+      <main class="ns-page-container">
+        <div class="ns-grid ns-grid--3">
+          <ns-metric-card label="METRIC" value="42" unit="UNIT" hint="Visual placeholder"></ns-metric-card>
+          <ns-metric-card label="METRIC" value="—"></ns-metric-card>
+          <ns-card><div class="ns-card__body"><ns-status-badge tone="warning">STATUS</ns-status-badge></div></ns-card>
+        </div>
+
+        <div style="height:14px"></div>
+
+        <ns-settings-category>
+          <div class="ns-settings-category__header">
+            <h2 class="ns-settings-category__title">SETTINGS CATEGORY</h2>
+            <p class="ns-settings-category__description">Pure visual grouping with no application state.</p>
+          </div>
+          <ns-settings-section>
+            <div class="ns-settings-section__header"><h3 class="ns-settings-section__title">SETTINGS SECTION</h3></div>
+            <div class="ns-settings-section__body">
+              <div class="ns-grid ns-grid--3">
+                <ns-loading-state></ns-loading-state>
+                <ns-empty-state title="EMPTY STATE" message="Placeholder message"></ns-empty-state>
+                <ns-error-state title="ERROR STATE" message="Placeholder message"><button data-state-action class="ns-button ns-button--small">ACTION</button></ns-error-state>
+              </div>
+            </div>
+          </ns-settings-section>
+        </ns-settings-category>
+
+        <div style="height:14px"></div>
+
+        <ns-card>
+          <div class="ns-card__header"><h2 class="ns-card__title">CARD</h2></div>
+          <div class="ns-card__body">
+            <button class="ns-button ns-button--primary" id="open-dialog">OPEN DIALOG</button>
+          </div>
+        </ns-card>
+      </main>
+    </div>
+  </ns-app-shell>
+
+  <ns-dialog id="visual-dialog">
+    <div class="ns-dialog__header"><h2 class="ns-dialog__title">DIALOG</h2></div>
+    <div class="ns-dialog__body">Pure visual dialog content.</div>
+    <div class="ns-dialog__footer"><button class="ns-button" id="close-dialog">CLOSE</button></div>
+  </ns-dialog>
+
+  <ns-toast-region>
+    <ns-toast tone="info" title="TOAST" message="Visual placeholder" dismiss-label="Dismiss"></ns-toast>
+  </ns-toast-region>
+
+  <script type="module">
+    import "./js/index.js";
+    const root = document.documentElement;
+    document.getElementById("theme-toggle").addEventListener("click", () => {
+      root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+    });
+    const visualDialog = document.getElementById("visual-dialog");
+    document.getElementById("open-dialog").addEventListener("click", () => visualDialog.showModal());
+    document.getElementById("close-dialog").addEventListener("click", () => visualDialog.close());
+  </script>
+</body>
+</html>

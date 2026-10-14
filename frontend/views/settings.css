@@ -1,0 +1,49 @@
+.ns-settings-stack{display:flex;flex-direction:column;gap:14px}.ns-settings-tree-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}.ns-settings-tree-row:last-child{border-bottom:none}.ns-settings-tree-indent{display:inline-block;width:16px;flex:0 0 16px}
+.ns-settings-body>ns-loading-state{height:100%;min-height:0;border:0;background:transparent;padding:0;display:grid;place-items:center}.ns-settings-body>ns-loading-state::before{display:none}.ns-settings-body>ns-error-state{min-height:100%;border-radius:0;border-width:0 0 0 1px}.ns-settings-page>ns-card+ns-card{margin-top:14px}
+.ns-settings-background-status{display:flex;align-items:center;gap:8px;padding:12px 0;color:var(--text-3);font-size:var(--ns-text-10-5);letter-spacing:.04em}.ns-settings-background-status__dot{width:6px;height:6px;border-radius:50%;background:var(--amber);animation:settings-scan-pulse 1s ease-in-out infinite}.ns-settings-premium-results{min-height:34px}@keyframes settings-scan-pulse{0%,100%{opacity:.35}50%{opacity:1}}
+
+/* Co-Server / cluster controls stay visible by role, including while the
+   server is stopped, so users can see what action becomes available next. */
+.ns-cluster-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}
+.ns-cluster-actions>.ns-button{margin:0!important}
+.ns-cluster-sas{margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:var(--r-m);background:var(--surface-2)}
+.ns-cluster-sas .ns-cluster-actions{margin-top:10px}
+.ns-cluster-node-list{margin-top:14px;border-top:1px solid var(--border)}
+.ns-cluster-node-list .ns-settings-list-row:last-child{border-bottom:0}
+
+/* Settings visual parity with the current NetShare mockups. */
+.ns-settings-appearance{display:flex;flex-direction:column;gap:26px}.ns-settings-segmented-field{margin:0}.ns-settings-segmented-field>.ns-field__label{display:block;margin-bottom:10px}.ns-segmented-control{display:inline-flex;max-width:100%;border:1px solid var(--border-strong);border-radius:var(--r-s);overflow:hidden;background:transparent}.ns-segmented-control__button{min-height:32px;padding:8px 14px;border:0;border-right:1px solid var(--border-strong);background:transparent;color:var(--text-2);font:700 var(--ns-text-10-5)/1 var(--font);letter-spacing:.06em;cursor:pointer;white-space:nowrap}.ns-segmented-control__button:last-child{border-right:0}.ns-segmented-control__button:hover:not(:disabled){color:var(--text);background:var(--surface-2)}.ns-segmented-control__button.is-active{background:var(--fill);color:var(--fill-text)}.ns-segmented-control__button:disabled{opacity:.45;cursor:not-allowed}.ns-select--custom{-webkit-appearance:none;appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--text-2) 50%),linear-gradient(135deg,var(--text-2) 50%,transparent 50%);background-position:calc(100% - 15px) calc(50% - 2px),calc(100% - 10px) calc(50% - 2px);background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:30px}
+
+.ns-performance-hardware{display:flex;align-items:center;gap:14px;margin-bottom:22px;padding:16px;border:1px solid var(--border);border-radius:var(--r-m);background:var(--surface)}.ns-performance-hardware__icon{width:38px;height:38px;flex:0 0 38px;display:grid;place-items:center;border:1px solid var(--border-strong);border-radius:var(--r-s)}.ns-performance-hardware__icon svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7}.ns-performance-hardware__copy{display:flex;min-width:0;flex-direction:column;gap:3px}.ns-performance-hardware__copy strong{font-size:var(--ns-text-12-5);letter-spacing:.02em}.ns-performance-hardware__copy span{font-size:var(--ns-text-10-5);color:var(--text-2)}.ns-performance-workers-card .ns-card__section{padding-bottom:8px}.ns-settings-range-row{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 0;border-bottom:1px solid var(--border)}.ns-settings-range-row:last-of-type{border-bottom:0}.ns-settings-range-row__copy{min-width:0;flex:1}.ns-settings-range-row__control{display:flex;align-items:center;gap:12px;flex:0 0 min(230px,42%)}.ns-range{-webkit-appearance:none;appearance:none;width:100%;height:2px;background:var(--border-strong);outline:none;cursor:pointer}.ns-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;border:0;border-radius:0;background:var(--text);cursor:pointer}.ns-range::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:0;background:var(--text);cursor:pointer}.ns-settings-range-row__value{width:28px;flex:0 0 28px;text-align:right;color:var(--text-2);font-size:var(--ns-text-11);font-weight:700}
+
+.ns-settings-security-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0}.ns-security-events{margin-top:10px}.ns-security-event{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}.ns-security-event:last-child{border-bottom:0}.ns-security-event__dot{width:6px;height:6px;margin-top:6px;flex:0 0 6px;border-radius:50%;background:var(--text-3)}.ns-security-event__dot--warning{background:var(--amber)}.ns-security-event__dot--danger,.ns-security-event__dot--error{background:var(--red)}.ns-security-event__main{min-width:0;flex:1}.ns-security-event__title{font-size:var(--ns-text-11);font-weight:700;letter-spacing:.02em}.ns-security-event__meta{margin-top:3px;color:var(--text-3);font-size:var(--ns-text-10);overflow-wrap:anywhere}
+
+@media(max-width:760px){.ns-segmented-control{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.ns-segmented-control__button{border-right:1px solid var(--border-strong);border-bottom:1px solid var(--border-strong)}.ns-segmented-control__button:nth-child(2n){border-right:0}.ns-segmented-control__button:nth-last-child(-n+2){border-bottom:0}.ns-settings-security-grid{grid-template-columns:1fr 1fr}.ns-settings-range-row{align-items:flex-start;flex-direction:column}.ns-settings-range-row__control{width:100%;flex-basis:auto}}
+@media(max-width:520px){.ns-settings-security-grid{grid-template-columns:1fr}.ns-segmented-control{grid-template-columns:1fr}.ns-segmented-control__button{border-right:0;border-bottom:1px solid var(--border-strong)}.ns-segmented-control__button:last-child{border-bottom:0}}
+
+/* Round 19 — destructive local-data maintenance stays visually explicit. */
+.ns-settings-danger-zone{border-color:var(--red)}
+.ns-settings-danger-zone .ns-card__title{color:var(--red)}
+.ns-settings-maintenance-status{margin-bottom:12px}
+
+/* C5.1 — Settings vertical rhythm.
+   Keep controls visually separated from preceding status/help rows without
+   introducing per-screen spacing overrides. */
+.ns-card__section > .ns-field,
+.ns-card__section > .ns-form-stack,
+.ns-card__section > .ns-settings-segmented-field {
+  margin-top: var(--ns-space-4, 14px);
+}
+.ns-card__section > .ns-field:first-child,
+.ns-card__section > .ns-form-stack:first-child,
+.ns-card__section > .ns-settings-segmented-field:first-child {
+  margin-top: 0;
+}
+.ns-form-stack > .ns-field {
+  margin-bottom: 0;
+}
+.ns-card__section > .ns-field + .ns-muted,
+.ns-card__section > .ns-settings-segmented-field + .ns-muted {
+  margin-top: 0;
+}
+.ns-vault-recovery-key{margin:16px 0 0;padding:16px;border:1px solid var(--border-strong);border-radius:var(--r-s);background:var(--surface-2);color:var(--text);font:700 var(--ns-text-12)/1.8 var(--font-mono,monospace);white-space:pre-wrap;word-break:break-word;user-select:all}.ns-vault-print-frame{position:fixed;width:1px;height:1px;right:-9999px;bottom:-9999px;border:0;opacity:0}

@@ -1,0 +1,34 @@
+.ns-sharing{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+.ns-sharing__column{display:flex;flex-direction:column;gap:14px}
+.ns-sharing__public-link{display:flex;flex-direction:column;gap:14px}
+.ns-sharing__card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}
+.ns-sharing__card-head-copy{min-width:0;flex:1}
+.ns-sharing__card-head-copy .ns-card__title{margin:0 0 4px}
+.ns-sharing__card-head-copy .ns-card__description{margin:0}
+.ns-sharing__url,.ns-secret-row{display:flex;gap:6px;align-items:center}
+.ns-sharing__url--with-actions{position:relative;display:block}
+.ns-sharing__url-input{width:100%;padding-right:70px!important}
+.ns-sharing__url-actions{position:absolute;top:50%;right:5px;display:flex;gap:2px;transform:translateY(-50%)}
+.ns-sharing__url-action{width:26px;height:26px;border:0;background:transparent;color:var(--text-2);display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-s);cursor:pointer}
+.ns-sharing__url-action:hover:not(:disabled){background:var(--surface-3);color:var(--text)}
+.ns-sharing__url-action:focus-visible{outline:1px solid var(--text);outline-offset:1px}
+.ns-sharing__url-action:disabled{opacity:.35;cursor:not-allowed}
+.ns-sharing__url-action svg{width:14px;height:14px;pointer-events:none}
+.ns-sharing__url .ns-input,.ns-secret-row .ns-input{flex:1}
+.ns-button--block{width:100%}
+.ns-sharing__key-actions{display:flex;gap:6px}
+.ns-sharing__limits{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.ns-checkbox-grid{display:flex;gap:6px;flex-wrap:wrap}
+.ns-checkbox{display:inline-flex;align-items:center;gap:6px;font-size:var(--ns-text-10);color:var(--text-2);border:1px solid var(--border);border-radius:var(--r-s);padding:6px 8px}
+.ns-sharing__session{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)}
+.ns-sharing__session:last-child{border-bottom:none}
+.ns-sharing__session-name{font-size:var(--ns-text-12);font-weight:600}
+.ns-sharing__session-meta{font-size:var(--ns-text-10);color:var(--text-3);overflow-wrap:anywhere}
+.ns-sharing__pending{font-size:var(--ns-text-10);color:var(--amber)}
+@media(max-width:980px){.ns-sharing{grid-template-columns:1fr}}
+@media(max-width:640px){
+  .ns-sharing__limits{grid-template-columns:1fr}
+  .ns-secret-row{align-items:stretch;flex-wrap:wrap}
+  .ns-secret-row .ns-input{flex:1 1 100%}
+  .ns-sharing__card-head{gap:10px}
+}

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetShare Server</title>
+  <link rel="stylesheet" href="./design-system/css/index.css">
+  <link rel="stylesheet" href="./design-system/css/controls.css">
+  <link rel="stylesheet" href="./design-system/css/forms.css">
+  <link rel="stylesheet" href="./design-system/css/table.css">
+  <link rel="stylesheet" href="./shell/css/shell.css">
+  <link rel="stylesheet" href="./views/overview.css">
+  <link rel="stylesheet" href="./views/sharing.css">
+  <link rel="stylesheet" href="./views/devices.css">
+  <link rel="stylesheet" href="./views/activity.css">
+  <link rel="stylesheet" href="./views/settings.css">
+</head>
+<body>
+  <!-- Native startup banner lives in splash.html; the main WebView loads hidden. -->
+  <div class="app" id="app-shell" aria-hidden="true">
+    <aside class="sidebar" id="sidebar" data-i18n-aria-label="primary_navigation">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square"><path d="M6 18V6l12 12V6"/></svg>
+        </div>
+        <div class="brand-text"><b>NETSHARE</b><span>SERVER</span></div>
+      </div>
+
+      <div class="nav-eyebrow">01 / <span data-i18n="nav_main"></span></div>
+      <button class="nav-item active" type="button" data-route="overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="10"/><rect x="13" y="3" width="8" height="6"/><rect x="13" y="11" width="8" height="10"/><rect x="3" y="15" width="8" height="6"/></svg>
+        <span data-route-label="overview"></span>
+      </button>
+      <button class="nav-item" type="button" data-route="sharing">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.5 3.6 5.6 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.6-3.6-9s1.2-6.5 3.6-9z"/></svg>
+        <span data-route-label="sharing"></span>
+      </button>
+      <button class="nav-item" type="button" data-route="devices">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="2" width="12" height="20"/><path d="M11 18h2"/></svg>
+        <span data-route-label="devices"></span>
+        <span class="nav-badge" id="device-count-badge" hidden>0</span>
+      </button>
+      <button class="nav-item" type="button" data-route="activity">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l2.5-8L14 20l2.5-8H21"/></svg>
+        <span data-route-label="activity"></span>
+      </button>
+
+      <div class="nav-eyebrow">02 / <span data-i18n="nav_config"></span></div>
+      <button class="nav-item" type="button" data-route="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 13.5a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.9-2.9l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1h-.2a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.9-2.9l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6v-.2a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.9 2.9l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1z"/></svg>
+        <span data-route-label="settings"></span>
+      </button>
+
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-footer">
+        <div class="status-chip" id="server-status-chip">
+          <span class="dot"></span>
+          <div><b id="server-status-label"></b><span id="server-status-sub">—</span></div>
+        </div>
+        <div class="footer-row">
+          <div class="machine"><b id="machine-name">NETSHARE SERVER</b><span id="version-company">—</span></div>
+          <div class="footer-actions">
+            <button class="icon-btn server-power-button" id="server-power-button" type="button" data-i18n-title="start_server" data-i18n-aria-label="start_server">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 2v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+            </button>
+            <button class="icon-btn" id="language-button" type="button" data-i18n-title="language" data-i18n-aria-label="language">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.2 2.6 3.4 5.7 3.4 9s-1.2 6.4-3.4 9c-2.2-2.6-3.4-5.7-3.4-9s1.2-6.4 3.4-9z"/></svg>
+            </button>
+            <button class="icon-btn theme-toggle" id="theme-switch" type="button" data-i18n-title="toggle_theme" data-i18n-aria-label="toggle_theme">
+              <svg class="theme-icon theme-icon--sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg>
+              <svg class="theme-icon theme-icon--moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20.5 14.6A8 8 0 0 1 9.4 3.5 8.5 8.5 0 1 0 20.5 14.6z"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="sidebar-scrim" id="scrim"></div>
+
+    <div class="main-column">
+      <div class="mobile-topbar">
+        <button class="icon-btn" id="mobile-menu-button" type="button" data-i18n-aria-label="open_menu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <b class="caps">NETSHARE SERVER</b>
+      </div>
+      <main class="content" id="content">
+        <div class="view-host" id="shell-content" aria-live="polite"></div>
+      </main>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="modal-language" aria-hidden="true">
+    <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="language-title">
+      <div class="modal-head"><h3 id="language-title"></h3>
+        <button class="icon-btn" type="button" data-close-language data-i18n-aria-label="close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div class="modal-body"><div class="language-grid" id="language-grid"></div></div>
+    </div>
+  </div>
+
+  <div id="toast-region" aria-live="polite" aria-relevant="additions"></div>
+  <div id="dialog-host"></div>
+  <script type="module" src="./shell/js/app.js"></script>
+</body>
+</html>
