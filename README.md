@@ -10,6 +10,10 @@
 ![Version](https://img.shields.io/badge/Version-1.2.5-white?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)
 [![Documentation](https://img.shields.io/badge/Documentation-Read%20the%20docs-white?style=flat-square)](docs/README.md)
+[![Website](https://img.shields.io/badge/Website-netshareplayer.com-white?style=flat-square)](https://www.netshareplayer.com/)
+[![Microsoft Store](https://img.shields.io/badge/Microsoft%20Store-Download-0078D4?style=flat-square&logo=microsoft)](https://apps.microsoft.com/detail/9P3MQ83NT0CC)
+[![Google Play](https://img.shields.io/badge/Google%20Play-Download-414141?style=flat-square&logo=googleplay)](https://play.google.com/store/apps/details?id=org.melotechnologies.netshareplayer)
+[![Huawei AppGallery](https://img.shields.io/badge/Huawei%20AppGallery-Download-CF0A2C?style=flat-square&logo=huawei)](https://appgallery.huawei.com/app/C118469501)
 
 **Browse, stream, and download files from your computer to your phone.**  
 Use your local network at home or a secure tunnel when you are away.
@@ -368,7 +372,7 @@ Actual playback support can vary depending on the device, codec, and installed a
 
 ### NetShare Server — Windows
 
-1. Download `NetShare.Server.exe` from the [latest GitHub release](https://github.com/Melo-Technology/NetShare-Player/releases).
+1. Install **NetShare Server for Windows** from the [Microsoft Store](https://apps.microsoft.com/detail/9P3MQ83NT0CC), or download `NetShare.Server.exe` from the [latest GitHub release](https://github.com/Melo-Technology/NetShare-Player/releases).
 2. Run the application.
 3. Select the folder you want to share.
 4. Configure an optional local password.
@@ -378,7 +382,7 @@ A portable build may run without installation. Installer-based releases can also
 
 ### NetShare Player — Android
 
-Install NetShare Player from Google Play when available, or download the APK from the [latest GitHub release](https://github.com/Melo-Technology/NetShare-Player/releases).
+Install **NetShare Player for Android** from [Google Play](https://play.google.com/store/apps/details?id=org.melotechnologies.netshareplayer) or [Huawei AppGallery](https://appgallery.huawei.com/app/C118469501). You can also download the APK from the [latest GitHub release](https://github.com/Melo-Technology/NetShare-Player/releases).
 
 When installing an APK manually, Android may ask you to authorize installations from the application used to open the file.
 
@@ -452,9 +456,9 @@ See the repository and release files for the complete license terms and redistri
 
 **Made with ♥ by Mélo Technology**
 
-[melotechnology@proton.me](mailto:melotechnology@proton.me) ·
+[contact@netshareplayer.com](mailto:contact@netshareplayer.com) ·
+[Website](https://www.netshareplayer.com/) ·
 [GitHub](https://github.com/Melo-Technology) ·
 [Releases](https://github.com/Melo-Technology/NetShare-Player/releases)
 
 </div>
-
