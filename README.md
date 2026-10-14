@@ -444,6 +444,16 @@ Both applications work together but have separate responsibilities: the server o
 
 ---
 
+## Contributing
+
+Bug reports, feature suggestions, translations, documentation improvements,
+and authorized code contributions are welcome.
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing or starting
+a change.
+
+---
+
 ## License
 
 NetShare Player is distributed as freeware.
