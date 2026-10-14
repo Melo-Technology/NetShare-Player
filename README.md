@@ -7,7 +7,7 @@
 
 [![License: Freeware](https://img.shields.io/badge/License-Freeware-white.svg?style=flat-square)](https://github.com/Melo-Technology/NetShare-Player)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Android%20%7C%20Linux%20%7C%20macOS-white?style=flat-square)
-![Version](https://img.shields.io/badge/Version-1.2.5-white?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.2.7-white?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)
 [![Documentation](https://img.shields.io/badge/Documentation-Read%20the%20docs-white?style=flat-square)](docs/README.md)
 [![Website](https://img.shields.io/badge/Website-netshareplayer.com-white?style=flat-square)](https://www.netshareplayer.com/)
@@ -38,7 +38,7 @@ NetShare is designed for users who value privacy, performance, and control.
 - **Offline-Friendly** — Local access does not require an internet connection.
 - **Remote Access** — Connect through a supported public or private tunnel.
 - **Media-First Experience** — Stream audio, video, images, and text files.
-- **Multilingual** — Available in 10 languages.
+- **Multilingual** — Available in 27 languages.
 
 ---
 
@@ -322,20 +322,26 @@ An in-app FAQ is also available from Settings.
 - Persistent theme preference.
 - Responsive layouts for phones and tablets.
 - Contextual tutorials for hidden or gesture-based features.
-- Interface translated into 10 languages.
+- Interface translated into 27 languages.
 
 ### Supported Languages
 
-- English
-- French
-- Spanish
-- German
-- Portuguese
-- Russian
-- Arabic
-- Chinese
-- Japanese
-- Korean
+| Language | Language |
+| :--- | :--- |
+| Arabic — العربية | Malay — Bahasa Melayu |
+| Chinese — 中文 | Persian — فارسی |
+| Dutch — Nederlands | Polish — Polski |
+| English | Portuguese — Português |
+| Filipino | Romanian — Română |
+| French — Français | Russian — Русский |
+| German — Deutsch | Spanish — Español |
+| Greek — Ελληνικά | Swahili — Kiswahili |
+| Hindi — हिन्दी | Thai — ไทย |
+| Hungarian — Magyar | Turkish — Türkçe |
+| Indonesian — Bahasa Indonesia | Ukrainian — Українська |
+| Italian — Italiano | Urdu — اردو |
+| Japanese — 日本語 | Vietnamese — Tiếng Việt |
+| Korean — 한국어 | |
 
 ---
 
